@@ -1,5 +1,6 @@
 import { getPersonaSource, getPersonaSummaries } from './personas';
 import type { ChatMessage, MemoryFragment, Phase, RunRecord } from './types';
+import { baselineScenes } from './baseline-scenes';
 
 export const BUILTIN_RUN_ID = 'campus-32-baseline-v1';
 const anchor = '2026-09-08';
@@ -59,6 +60,27 @@ const drifts = [
   ['周末好像要下雨', '那你的出门计划估计又要摇摆了'],
 ] as const;
 
+const naturalExtras: Array<Array<['user'|'agent', string]>> = [
+  [['user','自动贩卖机把我的可乐卡住了'],['agent','经典的付一瓶钱看一瓶可乐。'],['user','我拍了两下，旁边又掉下来一瓶'],['agent','很好，现在是买一送一。']],
+  [['user','图书馆我常坐的位置灯坏了'],['agent','那个靠窗、插座还特别松的位置？'],['user','对，我居然已经坐出感情了'],['agent','人类会对固定座位产生领地意识。']],
+  [['user','食堂阿姨今天给我盛了两勺肉'],['agent','她认出你了，还是手抖方向终于对了？'],['user','我宁愿相信是认出我了哈哈'],['agent','那你明天去验证一下待遇。']],
+  [['user','快递柜前面排了二十多个人'],['agent','你买了什么值得排这个队？'],['user','一包袜子'],['agent','袜子本人压力很大。']],
+  [['user','出门的时候没下雨，我走到一半暴雨'],['agent','天气专门等你离宿舍最远的时候。'],['user','鞋已经能养鱼了'],['agent','回去先救鞋，别真往里放鱼。']],
+  [['user','室友的闹钟从七点响到七点四十'],['agent','她醒了吗？'],['user','她没醒，我们三个全醒了'],['agent','这个闹钟服务对象很广。']],
+  [['user','校园单车坐垫今天烫得离谱'],['agent','秋天只是日历上的，坐垫不同意。'],['user','我站着骑到教学楼'],['agent','今日份腿部训练完成。']],
+  [['user','洗衣机又吃了我一只袜子'],['agent','宿舍里已经有一个单只袜子收藏馆了吧。'],['user','三只，颜色还都不一样'],['agent','再攒一只可以随机配对。']],
+  [['user','我刚在教室捡到一张写满公式的草稿'],['agent','字好看到舍不得扔那种？'],['user','对，像打印出来的'],['agent','而你的草稿像地震监测图。']],
+  [['user','社团群突然发了九十九加'],['agent','有正事吗？'],['user','点进去全在接龙表情包'],['agent','信息密度非常稳定地等于零。']],
+  [['user','学校门口新开的店排到拐弯'],['agent','你去凑热闹了吗？'],['user','看了一眼价格就走了'],['agent','完成零元探店。']],
+  [['user','今天有人把校园卡落在打印店'],['agent','你交给老板了？'],['user','嗯，五分钟后那个人冲回来找'],['agent','你见证了一次小型失而复得。']],
+];
+
+function extraOffsets(activityClass: string, phase: Phase) {
+  const historical: Record<string, number[]> = { A: [-27, -14, -8, -2], B: [-25, -6], C: [-22], D: [] };
+  const future: Record<string, number[]> = { A: [1, 10], B: [11], C: [], D: [] };
+  return (phase === 'historical' ? historical : future)[activityClass] ?? [];
+}
+
 function leadFor(fact: Fact, index: number, phase: Phase) {
   const text = compact(fact.content);
   if (/刚入学两周，在/.test(text)) return text.replace('刚入学两周，在', '开学才两周，我还在');
@@ -114,6 +136,31 @@ export function buildBuiltinRun(personaFilter?: string) {
 
   for (const profile of profiles) {
     if (personaFilter && profile.id !== personaFilter) continue;
+    const curated = baselineScenes[profile.id];
+    if (curated) {
+      for (const phase of ['historical', 'future'] as Phase[]) {
+        const scene = curated[phase];
+        if (!scene) continue;
+        const classOffset = { A: phase === 'historical' ? -20 : 3, B: phase === 'historical' ? -17 : 6, C: phase === 'historical' ? -9 : 9, D: phase === 'historical' ? -24 : 12 }[profile.activityClass];
+        const day = dateAt(classOffset);
+        const hour = phase === 'historical' ? 20 : 19;
+        const base = new Date(`${day}T${hour}:${String(8 + Number(profile.id.slice(1)) % 40).padStart(2,'0')}:00+08:00`).getTime();
+        const messageIds: string[] = [];
+        scene.messages.forEach(([speaker, content], messageIndex) => {
+          const messageId = `${profile.id}-${phase[0]}-curated-${messageIndex + 1}`;
+          messageIds.push(messageId);
+          messages.push({ id: messageId, runId: BUILTIN_RUN_ID, personaId: profile.id, phase, sessionId: `${profile.id}-${phase}-curated`, timestamp: new Date(base + messageIndex * 90_000).toISOString(), speaker, content, sequence: sequence++ });
+        });
+        scene.memories.forEach((memory, memoryIndex) => memories.push({ id: `${profile.id}-${phase[0]}-curated-mem-${memoryIndex + 1}`, runId: BUILTIN_RUN_ID, personaId: profile.id, dayKey: day, phase, domain: memory.domain, kind: memory.kind ?? 'fact', content: memory.content, confidence: memory.kind === 'observed' || memory.kind === 'inference' ? .68 : .93, evidenceType: memory.kind === 'observed' || memory.kind === 'inference' || memory.kind === 'stable_trait' ? 'observed' : 'explicit', privacy: memory.privacy ?? 'normal', socialIntent: Boolean(memory.socialIntent), sourceMessageIds: [messageIds[memory.source]].filter(Boolean), status: 'active' }));
+        extraOffsets(profile.activityClass, phase).forEach((offset, extraIndex) => {
+          const extraDay = dateAt(offset);
+          const extra = naturalExtras[(hash(`${profile.id}-${phase}-${extraIndex}`) + extraIndex) % naturalExtras.length];
+          const extraBase = new Date(`${extraDay}T${String(12 + hash(`${profile.id}-${extraDay}`) % 10).padStart(2, '0')}:00:00+08:00`).getTime();
+          extra.forEach(([speaker, content], messageIndex) => messages.push({ id: `${profile.id}-${phase[0]}-extra-${extraIndex + 1}-${messageIndex + 1}`, runId: BUILTIN_RUN_ID, personaId: profile.id, phase, sessionId: `${profile.id}-${phase}-extra-${extraIndex + 1}`, timestamp: new Date(extraBase + messageIndex * 80_000).toISOString(), speaker, content, sequence: sequence++ }));
+        });
+      }
+      continue;
+    }
     const source = getPersonaSource(profile.id);
     const facts = collectFacts(source);
     const idNumber = Number(profile.id.slice(1));
@@ -158,6 +205,17 @@ export function buildBuiltinRun(personaFilter?: string) {
       });
     }
   }
-  const run: RunRecord = { id: BUILTIN_RUN_ID, name: '校园 32 人基础 Memory', status: 'completed', createdAt: `${anchor}T00:00:00.000Z`, completedAt: `${anchor}T00:30:00.000Z`, provider: 'Codex 直接生成', model: '固定基线 v1', historicalDays: 28, futureDays: 14, densityScale: 40, selectedCount: 32, completedCount: 32, failedCount: 0, errorSummary: null };
+  const frameworkFor = (domain: string) => domain === 'relationship' ? '03_Relationship_Record' : domain === 'permission' ? '04_Privacy_and_Permission' : domain === 'social_intent' ? '05_Matching_Profile.Social_Intent' : `01_Self_Memory.${domain}`;
+  const dailyGroups = new Map<string, MemoryFragment[]>();
+  for (const memory of memories) {
+    memory.frameworkPath = frameworkFor(memory.domain);
+    const key = `${memory.personaId}/${memory.dayKey}`;
+    dailyGroups.set(key, [...(dailyGroups.get(key) ?? []), memory]);
+  }
+  for (const items of dailyGroups.values()) {
+    const summary = items.map((item) => item.content).join('；');
+    for (const item of items) item.dailySummary = summary;
+  }
+  const run: RunRecord = { id: BUILTIN_RUN_ID, name: '校园 32 人 · Vouch 自然对话基线', status: 'completed', createdAt: `${anchor}T00:00:00.000Z`, completedAt: `${anchor}T00:30:00.000Z`, provider: 'Codex 直接生成', model: 'Vouch natural prompt v4', historicalDays: 28, futureDays: 14, densityScale: 40, selectedCount: 32, completedCount: 32, failedCount: 0, errorSummary: null };
   return { run, selectedIds, messages, memories, failures: [], personaSource: personaFilter ? getPersonaSource(personaFilter) : undefined };
 }

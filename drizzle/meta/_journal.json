@@ -8,6 +8,13 @@
       "when": 1788853282875,
       "tag": "0000_careful_wallop",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1788861305871,
+      "tag": "0001_hot_lady_bullseye",
+      "breakpoints": true
     }
   ]
 }

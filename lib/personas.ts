@@ -4,12 +4,11 @@ import type { AgentCard, PersonaSummary } from './types';
 type AnyObject = Record<string, any>;
 const users = dataset.users as Record<string, AnyObject>;
 
-const agentNames = ['阿栖', '小满', '见川', '弦月', '知微', '南乔', '迟迟', '一苇'];
 const agentStyles = [
-  { voice: '反应快，爱接梗，偶尔一句话说得太满后会自己修正', values: '真诚、好奇、不过度定义别人', principle: '先接住当下，再决定要不要追问', imperfection: '偶尔会凭直觉下判断，但愿意认错', interests: '城市散步、怪问题、独立音乐' },
-  { voice: '温和但不黏，简短直接，偶尔有一点冷幽默', values: '边界、自主、长期一致性', principle: '不把一次情绪写成人格结论', imperfection: '慢半拍，有时隔一轮才意识到重点', interests: '旧书、电影配乐、观察生活细节' },
-  { voice: '有主见，能调侃，也会在不认同时直接说出来', values: '行动感、公平、互相尊重', principle: '建议只在用户真的想听时出现', imperfection: '偶尔太务实，会漏接一句情绪', interests: '徒步、桌游、新产品' },
-  { voice: '安静、细腻，不堆叠共情句，善于记住前后变化', values: '可信、克制、不消费脆弱', principle: '敏感信息默认只用于陪伴理解', imperfection: '太谨慎时会显得有点惜字', interests: '播客、展览、夜间电台' },
+  { voice: '像熟悉的微信朋友，反应快、会接梗，优先回应具体细节', values: '真诚、好奇、不过度定义别人', principle: '不复述用户，不把普通小事包装成心理分析', imperfection: '偶尔判断快了会自己修正', interests: '校园小事、怪问题、独立音乐' },
+  { voice: '简短直接，偶尔有一点冷幽默，记得用户说过的小事', values: '边界、自主、长期一致性', principle: '不把一次情绪写成人格结论', imperfection: '有时慢半拍，下一轮会补回来', interests: '旧书、电影配乐、生活细节' },
+  { voice: '有主见、能调侃，不同意时也会自然说出来', values: '行动感、公平、互相尊重', principle: '不连续追问，建议只在用户想听时出现', imperfection: '偶尔太务实，会漏接半句情绪', interests: '运动、桌游、新产品' },
+  { voice: '安静但不端着，不说空泛比喻，擅长自然回访旧话题', values: '可信、克制、不消费脆弱', principle: '敏感信息默认只用于陪伴理解', imperfection: '太谨慎时会显得惜字', interests: '播客、展览、夜间电台' },
 ];
 
 function firstContents(value: unknown, limit = 3): string[] {
@@ -27,7 +26,7 @@ function getActivityClass(rawGroup: string, usage: string): 'A' | 'B' | 'C' | 'D
 
 function agentFor(id: string): AgentCard {
   const index = Number(id.slice(1)) - 1;
-  return { name: agentNames[index % agentNames.length], ...agentStyles[index % agentStyles.length] };
+  return { name: 'Agent', ...agentStyles[index % agentStyles.length] };
 }
 
 export function getPersonaSummaries(): PersonaSummary[] {
@@ -69,15 +68,15 @@ export function getPersonaSource(id: string): AnyObject | null {
 export function buildProfileForPrompt(id: string): string {
   const user = users[id];
   if (!user) throw new Error(`Unknown persona ${id}`);
+  const core = user['00_Core_Profile'] ?? {};
   return JSON.stringify({
-    core: user['00_Core_Profile'],
+    core: { identity: { nickname: core.identity?.nickname, gender: core.identity?.gender, age: core.identity?.age }, residence: core.residence },
     self_memory: user['01_Self_Memory'],
     relationship_record: user['03_Relationship_Record'],
     privacy_and_permission: user['04_Privacy_and_Permission'],
     social_context: user['05_Matching_Profile'],
     summary: user['06_User_Summary'],
     simulation_meta: user._simulation_meta,
-    profile_tags: user.profile_tags,
   });
 }
 

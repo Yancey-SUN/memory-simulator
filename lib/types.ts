@@ -57,6 +57,8 @@ export type MemoryFragment = {
   sourceMessageIds: string[];
   status: string;
   phase: Phase;
+  frameworkPath?: string;
+  dailySummary?: string;
 };
 
 export type RunRecord = {
@@ -75,4 +77,3 @@ export type RunRecord = {
   failedCount: number;
   errorSummary: string | null;
 };
-

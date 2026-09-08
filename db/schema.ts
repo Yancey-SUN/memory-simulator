@@ -10,6 +10,7 @@ export const chatMessages = sqliteTable('chat_messages', {
 
 export const memoryFragments = sqliteTable('memory_fragments', {
   id: text('id').primaryKey(), runId: text('run_id').notNull(), personaId: text('persona_id').notNull(), dayKey: text('day_key').notNull(), phase: text('phase').notNull(), domain: text('domain').notNull(), kind: text('kind').notNull(), content: text('content').notNull(), confidence: integer('confidence').notNull(), evidenceType: text('evidence_type').notNull(), privacy: text('privacy').notNull(), socialIntent: integer('social_intent', { mode: 'boolean' }).notNull(), sourceMessageIdsJson: text('source_message_ids_json').notNull(), status: text('status').notNull(),
+  frameworkPath: text('framework_path'), dailySummary: text('daily_summary'),
 }, (table) => [index('memory_run_persona_idx').on(table.runId, table.personaId), index('memory_day_idx').on(table.dayKey)]);
 
 export const simulationFailures = sqliteTable('simulation_failures', {

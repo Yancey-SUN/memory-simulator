@@ -2,7 +2,7 @@ import { env } from 'cloudflare:workers';
 import { NextRequest, NextResponse } from 'next/server';
 import { activityPlan, buildProfileForPrompt, getPersonaSource, getPersonaSummaries } from '@/lib/personas';
 import { buildConversationPrompt } from '@/lib/prompts';
-import { createRun, getRunData, listRuns, saveFailure, savePersonaResult } from '@/lib/store';
+import { createRun, getRunData, listRuns, renameRun, saveFailure, savePersonaResult } from '@/lib/store';
 import type { ChatMessage, MemoryFragment, Phase } from '@/lib/types';
 import { BUILTIN_RUN_ID, buildBuiltinRun } from '@/lib/builtin-simulation';
 
@@ -81,13 +81,23 @@ function normalizePhase(payload: any, phase: Phase, runId: string, personaId: st
       if (item.ref) refMap.set(String(item.ref), id);
     }
   }
-  for (const item of (Array.isArray(payload?.memory_fragments) ? payload.memory_fragments : [])) {
+  const legacyMemories = Array.isArray(payload?.memory_fragments) ? payload.memory_fragments : [];
+  const dailyMemories = (Array.isArray(payload?.daily_memories) ? payload.daily_memories : []).flatMap((day: any) => (Array.isArray(day?.updates) ? day.updates : []).map((update: any) => ({ ...update, date: day.date, daily_summary: day.summary })));
+  for (const item of [...legacyMemories, ...dailyMemories]) {
     if (!item?.content) continue;
     const sourceMessageIds = (Array.isArray(item.source_refs) ? item.source_refs : []).map((ref: unknown) => refMap.get(String(ref))).filter(Boolean) as string[];
     if (!sourceMessageIds.length) continue;
-    memories.push({ id: crypto.randomUUID(), runId, personaId, dayKey: /^\d{4}-\d{2}-\d{2}$/.test(item.date) ? item.date : messages.find((m) => sourceMessageIds.includes(m.id))?.timestamp.slice(0, 10) ?? dateKey(0), phase, domain: String(item.domain || 'inner'), kind: String(item.kind || 'fact'), content: String(item.content).slice(0, 320), confidence: Math.max(0, Math.min(1, Number(item.confidence) || 0.5)), evidenceType: String(item.evidence_type || 'inferred'), privacy: String(item.privacy || 'normal'), socialIntent: Boolean(item.social_intent), sourceMessageIds, status: String(item.status || 'active') });
+    const domain = String(item.domain || 'inner');
+    memories.push({ id: crypto.randomUUID(), runId, personaId, dayKey: /^\d{4}-\d{2}-\d{2}$/.test(item.date) ? item.date : messages.find((m) => sourceMessageIds.includes(m.id))?.timestamp.slice(0, 10) ?? dateKey(0), phase, domain, kind: String(item.kind || 'fact'), content: String(item.content).slice(0, 320), confidence: Math.max(0, Math.min(1, Number(item.confidence) || 0.5)), evidenceType: String(item.evidence_type || 'inferred'), privacy: String(item.privacy || 'normal'), socialIntent: Boolean(item.social_intent), sourceMessageIds, status: String(item.status || 'active'), frameworkPath: String(item.framework_path || frameworkPath(domain)), dailySummary: item.daily_summary ? String(item.daily_summary).slice(0, 500) : undefined });
   }
   return { messages, memories, nextSequence: sequence };
+}
+
+function frameworkPath(domain: string) {
+  if (domain === 'relationship') return '03_Relationship_Record';
+  if (domain === 'permission') return '04_Privacy_and_Permission';
+  if (domain === 'social_intent') return '05_Matching_Profile.Social_Intent';
+  return `01_Self_Memory.${domain}`;
 }
 
 export async function GET(request: NextRequest) {
@@ -116,6 +126,13 @@ export async function POST(request: NextRequest) {
       if (!selectedIds.length) throw new Error('请至少选择 1 个用户');
       const run = await createRun({ name: String(input.name || `Memory 实验 ${new Date().toLocaleDateString('zh-CN')}`), provider: String(input.provider || 'deepseek'), model: String(input.model || 'deepseek-chat'), historicalDays: Math.max(7, Math.min(90, Number(input.historicalDays) || 28)), futureDays: 14, densityScale: Math.max(10, Math.min(100, Number(input.densityScale) || 30)), selectedIds });
       return NextResponse.json({ run });
+    }
+    if (input.action === 'rename_run') {
+      const runId = String(input.runId || '');
+      const name = String(input.name || '').trim();
+      if (!runId || !name || runId === BUILTIN_RUN_ID) throw new Error('该版本不能重命名');
+      await renameRun(runId, name);
+      return NextResponse.json({ ok: true, name });
     }
     if (input.action === 'simulate_persona') {
       const runId = String(input.runId || '');

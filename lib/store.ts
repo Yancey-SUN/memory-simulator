@@ -21,6 +21,10 @@ export async function ensureSchema() {
     db().prepare(`CREATE TABLE IF NOT EXISTS simulation_failures (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, persona_id TEXT NOT NULL, phase TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL)`),
     db().prepare(`CREATE INDEX IF NOT EXISTS failures_run_idx ON simulation_failures(run_id)`),
   ]);
+  const columns = await db().prepare(`PRAGMA table_info(memory_fragments)`).all();
+  const columnNames = new Set((columns.results as Array<{ name: string }>).map((column) => column.name));
+  if (!columnNames.has('framework_path')) await db().prepare(`ALTER TABLE memory_fragments ADD COLUMN framework_path TEXT`).run();
+  if (!columnNames.has('daily_summary')) await db().prepare(`ALTER TABLE memory_fragments ADD COLUMN daily_summary TEXT`).run();
   schemaReady = true;
 }
 
@@ -45,6 +49,11 @@ export async function createRun(input: { name: string; provider: string; model: 
   return { id, name: input.name, status: 'running', createdAt, completedAt: null, provider: input.provider, model: input.model, historicalDays: input.historicalDays, futureDays: input.futureDays, densityScale: input.densityScale, selectedCount: input.selectedIds.length, completedCount: 0, failedCount: 0, errorSummary: null } satisfies RunRecord;
 }
 
+export async function renameRun(runId: string, name: string) {
+  await ensureSchema();
+  await db().prepare(`UPDATE simulation_runs SET name=? WHERE id=?`).bind(name.slice(0, 80), runId).run();
+}
+
 export async function savePersonaResult(runId: string, personaId: string, model: string, messages: ChatMessage[], memories: MemoryFragment[]) {
   await ensureSchema();
   const statements = [
@@ -52,7 +61,7 @@ export async function savePersonaResult(runId: string, personaId: string, model:
     db().prepare(`DELETE FROM memory_fragments WHERE run_id=? AND persona_id=?`).bind(runId, personaId),
     db().prepare(`DELETE FROM simulation_failures WHERE run_id=? AND persona_id=?`).bind(runId, personaId),
     ...messages.map((m) => db().prepare(`INSERT INTO chat_messages (id,run_id,persona_id,phase,session_id,timestamp,speaker,content,sequence,model) VALUES (?,?,?,?,?,?,?,?,?,?)`).bind(m.id, runId, personaId, m.phase, m.sessionId, m.timestamp, m.speaker, m.content, m.sequence, model)),
-    ...memories.map((m) => db().prepare(`INSERT INTO memory_fragments (id,run_id,persona_id,day_key,phase,domain,kind,content,confidence,evidence_type,privacy,social_intent,source_message_ids_json,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(m.id, runId, personaId, m.dayKey, m.phase, m.domain, m.kind, m.content, Math.round(m.confidence * 100), m.evidenceType, m.privacy, m.socialIntent ? 1 : 0, JSON.stringify(m.sourceMessageIds), m.status)),
+    ...memories.map((m) => db().prepare(`INSERT INTO memory_fragments (id,run_id,persona_id,day_key,phase,domain,kind,content,confidence,evidence_type,privacy,social_intent,source_message_ids_json,status,framework_path,daily_summary) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(m.id, runId, personaId, m.dayKey, m.phase, m.domain, m.kind, m.content, Math.round(m.confidence * 100), m.evidenceType, m.privacy, m.socialIntent ? 1 : 0, JSON.stringify(m.sourceMessageIds), m.status, m.frameworkPath ?? null, m.dailySummary ?? null)),
     db().prepare(`UPDATE simulation_runs SET completed_count=completed_count+1 WHERE id=?`).bind(runId),
   ];
   for (let i = 0; i < statements.length; i += 75) await db().batch(statements.slice(i, i + 75));
@@ -89,7 +98,6 @@ export async function getRunData(runId: string, personaId?: string) {
   const failureQuery = db().prepare(`SELECT * FROM simulation_failures WHERE run_id=?${suffix} ORDER BY created_at`).bind(...(personaId ? [runId, personaId] : [runId]));
   const [messageResult, memoryResult, failureResult] = await db().batch([messageQuery, memoryQuery, failureQuery]);
   const messages = (messageResult.results as Record<string, unknown>[]).map((r) => ({ id: String(r.id), runId: String(r.run_id), personaId: String(r.persona_id), phase: String(r.phase), sessionId: String(r.session_id), timestamp: String(r.timestamp), speaker: String(r.speaker), content: String(r.content), sequence: Number(r.sequence) }));
-  const memories = (memoryResult.results as Record<string, unknown>[]).map((r) => ({ id: String(r.id), runId: String(r.run_id), personaId: String(r.persona_id), dayKey: String(r.day_key), phase: String(r.phase), domain: String(r.domain), kind: String(r.kind), content: String(r.content), confidence: Number(r.confidence) / 100, evidenceType: String(r.evidence_type), privacy: String(r.privacy), socialIntent: Boolean(r.social_intent), sourceMessageIds: JSON.parse(String(r.source_message_ids_json || '[]')), status: String(r.status) }));
+  const memories = (memoryResult.results as Record<string, unknown>[]).map((r) => ({ id: String(r.id), runId: String(r.run_id), personaId: String(r.persona_id), dayKey: String(r.day_key), phase: String(r.phase), domain: String(r.domain), kind: String(r.kind), content: String(r.content), confidence: Number(r.confidence) / 100, evidenceType: String(r.evidence_type), privacy: String(r.privacy), socialIntent: Boolean(r.social_intent), sourceMessageIds: JSON.parse(String(r.source_message_ids_json || '[]')), status: String(r.status), frameworkPath: r.framework_path ? String(r.framework_path) : undefined, dailySummary: r.daily_summary ? String(r.daily_summary) : undefined }));
   return { run: mapRun(runRow), selectedIds: JSON.parse(String(runRow.selected_ids_json || '[]')), messages, memories, failures: failureResult.results };
 }
-
