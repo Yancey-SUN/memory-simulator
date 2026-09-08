@@ -106,7 +106,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const input = await request.json().catch(() => ({}));
+  const input = await request.json().catch(() => ({})) as Record<string, any>;
   try {
     if (input.action === 'create_run') {
       const selectedIds = Array.isArray(input.selectedIds) ? input.selectedIds.filter((id: unknown) => /^U\d{2}$/.test(String(id))) : [];

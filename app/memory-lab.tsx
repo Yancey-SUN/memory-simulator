@@ -55,7 +55,7 @@ export default function MemoryLab() {
   const [config, setConfig] = useState({ name: `校园 Memory 实验`, provider: 'deepseek', model: 'deepseek-chat', baseUrl: '', apiKey: '', historicalDays: 28, densityScale: 30, userCount: 32, concurrency: 2 });
 
   async function bootstrap(preferredRunId?: string) {
-    const response = await fetch('/api/simulator'); const data = await response.json();
+    const response = await fetch('/api/simulator'); const data = await response.json() as any;
     if (!response.ok) throw new Error(data.error || '加载失败');
     setPersonas(data.personas); setRuns(data.runs);
     const target = preferredRunId || data.runs?.[0]?.id;
@@ -63,7 +63,7 @@ export default function MemoryLab() {
   }
 
   async function loadRun(runId: string) {
-    const response = await fetch(`/api/simulator?runId=${encodeURIComponent(runId)}`); const data = await response.json();
+    const response = await fetch(`/api/simulator?runId=${encodeURIComponent(runId)}`); const data = await response.json() as any;
     if (!response.ok) throw new Error(data.error || '读取实验失败'); setRunData(data);
   }
 
@@ -81,7 +81,7 @@ export default function MemoryLab() {
     setSelectedPersonaId(id); setDetailTab('memory'); setDetailData(null);
     try {
       const params = runData ? `runId=${runData.run.id}&personaId=${id}` : `personaId=${id}`;
-      const response = await fetch(`/api/simulator?${params}`); const data = await response.json(); if (!response.ok) throw new Error(data.error); setDetailData(data);
+      const response = await fetch(`/api/simulator?${params}`); const data = await response.json() as any; if (!response.ok) throw new Error(data.error); setDetailData(data);
     } catch (error) { setToast(error instanceof Error ? error.message : '读取用户失败'); }
   }
 
@@ -91,7 +91,7 @@ export default function MemoryLab() {
     setConfigOpen(false); setRunning({ done: 0, total: ids.length, failed: 0 });
     try {
       const createResponse = await fetch('/api/simulator', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create_run', ...config, selectedIds: ids }) });
-      const created = await createResponse.json(); if (!createResponse.ok) throw new Error(created.error);
+      const created = await createResponse.json() as any; if (!createResponse.ok) throw new Error(created.error);
       const queue = [...ids]; let done = 0; let failed = 0;
       async function worker() {
         while (queue.length) {
