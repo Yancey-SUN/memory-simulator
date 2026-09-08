@@ -1,0 +1,95 @@
+import { env } from 'cloudflare:workers';
+import type { ChatMessage, MemoryFragment, RunRecord } from './types';
+
+let schemaReady = false;
+
+function db(): D1Database {
+  if (!env.DB) throw new Error('共享数据库暂不可用，请确认 Sites D1 绑定。');
+  return env.DB;
+}
+
+export async function ensureSchema() {
+  if (schemaReady) return;
+  await db().batch([
+    db().prepare(`CREATE TABLE IF NOT EXISTS simulation_runs (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT, provider TEXT NOT NULL, model TEXT NOT NULL, historical_days INTEGER NOT NULL, future_days INTEGER NOT NULL, density_scale INTEGER NOT NULL, selected_count INTEGER NOT NULL, completed_count INTEGER NOT NULL DEFAULT 0, failed_count INTEGER NOT NULL DEFAULT 0, error_summary TEXT, selected_ids_json TEXT NOT NULL)`),
+    db().prepare(`CREATE TABLE IF NOT EXISTS chat_messages (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, persona_id TEXT NOT NULL, phase TEXT NOT NULL, session_id TEXT NOT NULL, timestamp TEXT NOT NULL, speaker TEXT NOT NULL, content TEXT NOT NULL, sequence INTEGER NOT NULL, model TEXT NOT NULL)`),
+    db().prepare(`CREATE INDEX IF NOT EXISTS messages_run_persona_idx ON chat_messages(run_id, persona_id)`),
+    db().prepare(`CREATE INDEX IF NOT EXISTS messages_timestamp_idx ON chat_messages(timestamp)`),
+    db().prepare(`CREATE TABLE IF NOT EXISTS memory_fragments (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, persona_id TEXT NOT NULL, day_key TEXT NOT NULL, phase TEXT NOT NULL, domain TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL, confidence INTEGER NOT NULL, evidence_type TEXT NOT NULL, privacy TEXT NOT NULL, social_intent INTEGER NOT NULL, source_message_ids_json TEXT NOT NULL, status TEXT NOT NULL)`),
+    db().prepare(`CREATE INDEX IF NOT EXISTS memory_run_persona_idx ON memory_fragments(run_id, persona_id)`),
+    db().prepare(`CREATE INDEX IF NOT EXISTS memory_day_idx ON memory_fragments(day_key)`),
+    db().prepare(`CREATE TABLE IF NOT EXISTS simulation_failures (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, persona_id TEXT NOT NULL, phase TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL)`),
+    db().prepare(`CREATE INDEX IF NOT EXISTS failures_run_idx ON simulation_failures(run_id)`),
+  ]);
+  schemaReady = true;
+}
+
+function mapRun(row: Record<string, unknown>): RunRecord {
+  return {
+    id: String(row.id), name: String(row.name), status: String(row.status), createdAt: String(row.created_at), completedAt: row.completed_at ? String(row.completed_at) : null, provider: String(row.provider), model: String(row.model), historicalDays: Number(row.historical_days), futureDays: Number(row.future_days), densityScale: Number(row.density_scale), selectedCount: Number(row.selected_count), completedCount: Number(row.completed_count), failedCount: Number(row.failed_count), errorSummary: row.error_summary ? String(row.error_summary) : null,
+  };
+}
+
+export async function listRuns() {
+  await ensureSchema();
+  const result = await db().prepare(`SELECT * FROM simulation_runs ORDER BY created_at DESC LIMIT 30`).all();
+  return (result.results as Record<string, unknown>[]).map(mapRun);
+}
+
+export async function createRun(input: { name: string; provider: string; model: string; historicalDays: number; futureDays: number; densityScale: number; selectedIds: string[] }) {
+  await ensureSchema();
+  const id = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  await db().prepare(`INSERT INTO simulation_runs (id,name,status,created_at,provider,model,historical_days,future_days,density_scale,selected_count,completed_count,failed_count,selected_ids_json) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,?)`)
+    .bind(id, input.name, 'running', createdAt, input.provider, input.model, input.historicalDays, input.futureDays, input.densityScale, input.selectedIds.length, JSON.stringify(input.selectedIds)).run();
+  return { id, name: input.name, status: 'running', createdAt, completedAt: null, provider: input.provider, model: input.model, historicalDays: input.historicalDays, futureDays: input.futureDays, densityScale: input.densityScale, selectedCount: input.selectedIds.length, completedCount: 0, failedCount: 0, errorSummary: null } satisfies RunRecord;
+}
+
+export async function savePersonaResult(runId: string, personaId: string, model: string, messages: ChatMessage[], memories: MemoryFragment[]) {
+  await ensureSchema();
+  const statements = [
+    db().prepare(`DELETE FROM chat_messages WHERE run_id=? AND persona_id=?`).bind(runId, personaId),
+    db().prepare(`DELETE FROM memory_fragments WHERE run_id=? AND persona_id=?`).bind(runId, personaId),
+    db().prepare(`DELETE FROM simulation_failures WHERE run_id=? AND persona_id=?`).bind(runId, personaId),
+    ...messages.map((m) => db().prepare(`INSERT INTO chat_messages (id,run_id,persona_id,phase,session_id,timestamp,speaker,content,sequence,model) VALUES (?,?,?,?,?,?,?,?,?,?)`).bind(m.id, runId, personaId, m.phase, m.sessionId, m.timestamp, m.speaker, m.content, m.sequence, model)),
+    ...memories.map((m) => db().prepare(`INSERT INTO memory_fragments (id,run_id,persona_id,day_key,phase,domain,kind,content,confidence,evidence_type,privacy,social_intent,source_message_ids_json,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(m.id, runId, personaId, m.dayKey, m.phase, m.domain, m.kind, m.content, Math.round(m.confidence * 100), m.evidenceType, m.privacy, m.socialIntent ? 1 : 0, JSON.stringify(m.sourceMessageIds), m.status)),
+    db().prepare(`UPDATE simulation_runs SET completed_count=completed_count+1 WHERE id=?`).bind(runId),
+  ];
+  for (let i = 0; i < statements.length; i += 75) await db().batch(statements.slice(i, i + 75));
+  await refreshRunStatus(runId);
+}
+
+export async function saveFailure(runId: string, personaId: string, phase: string, message: string) {
+  await ensureSchema();
+  await db().batch([
+    db().prepare(`DELETE FROM simulation_failures WHERE run_id=? AND persona_id=?`).bind(runId, personaId),
+    db().prepare(`INSERT INTO simulation_failures (id,run_id,persona_id,phase,message,created_at) VALUES (?,?,?,?,?,?)`).bind(crypto.randomUUID(), runId, personaId, phase, message.slice(0, 1200), new Date().toISOString()),
+    db().prepare(`UPDATE simulation_runs SET failed_count=failed_count+1, error_summary=? WHERE id=?`).bind(`${personaId}: ${message.slice(0, 180)}`, runId),
+  ]);
+  await refreshRunStatus(runId);
+}
+
+async function refreshRunStatus(runId: string) {
+  const result = await db().prepare(`SELECT selected_count,completed_count,failed_count FROM simulation_runs WHERE id=?`).bind(runId).first<Record<string, number>>();
+  if (!result) return;
+  const finished = Number(result.completed_count) + Number(result.failed_count) >= Number(result.selected_count);
+  if (finished) {
+    const status = Number(result.completed_count) === 0 ? 'failed' : Number(result.failed_count) > 0 ? 'partial' : 'completed';
+    await db().prepare(`UPDATE simulation_runs SET status=?,completed_at=? WHERE id=?`).bind(status, new Date().toISOString(), runId).run();
+  }
+}
+
+export async function getRunData(runId: string, personaId?: string) {
+  await ensureSchema();
+  const runRow = await db().prepare(`SELECT * FROM simulation_runs WHERE id=?`).bind(runId).first<Record<string, unknown>>();
+  if (!runRow) return null;
+  const suffix = personaId ? ` AND persona_id=?` : '';
+  const messageQuery = db().prepare(`SELECT * FROM chat_messages WHERE run_id=?${suffix} ORDER BY timestamp,sequence`).bind(...(personaId ? [runId, personaId] : [runId]));
+  const memoryQuery = db().prepare(`SELECT * FROM memory_fragments WHERE run_id=?${suffix} ORDER BY day_key,id`).bind(...(personaId ? [runId, personaId] : [runId]));
+  const failureQuery = db().prepare(`SELECT * FROM simulation_failures WHERE run_id=?${suffix} ORDER BY created_at`).bind(...(personaId ? [runId, personaId] : [runId]));
+  const [messageResult, memoryResult, failureResult] = await db().batch([messageQuery, memoryQuery, failureQuery]);
+  const messages = (messageResult.results as Record<string, unknown>[]).map((r) => ({ id: String(r.id), runId: String(r.run_id), personaId: String(r.persona_id), phase: String(r.phase), sessionId: String(r.session_id), timestamp: String(r.timestamp), speaker: String(r.speaker), content: String(r.content), sequence: Number(r.sequence) }));
+  const memories = (memoryResult.results as Record<string, unknown>[]).map((r) => ({ id: String(r.id), runId: String(r.run_id), personaId: String(r.persona_id), dayKey: String(r.day_key), phase: String(r.phase), domain: String(r.domain), kind: String(r.kind), content: String(r.content), confidence: Number(r.confidence) / 100, evidenceType: String(r.evidence_type), privacy: String(r.privacy), socialIntent: Boolean(r.social_intent), sourceMessageIds: JSON.parse(String(r.source_message_ids_json || '[]')), status: String(r.status) }));
+  return { run: mapRun(runRow), selectedIds: JSON.parse(String(runRow.selected_ids_json || '[]')), messages, memories, failures: failureResult.results };
+}
+
