@@ -34,10 +34,12 @@ async function callModel(provider: string, model: string, baseUrl: string, apiKe
   let lastError = '';
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
+      const tokenLimit = provider === 'openai' ? { max_completion_tokens: 8000 } : { max_tokens: 8000 };
+      const sampling = provider === 'openai' ? {} : { temperature: provider === 'deepseek' ? 1.15 : 0.95 };
       const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ model, temperature: provider === 'deepseek' ? 1.15 : 0.95, max_tokens: 8000, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: '你是严谨的对话模拟与记忆证据生成器。只返回合法 JSON。' }, { role: 'user', content: prompt }] }),
+        body: JSON.stringify({ model, ...sampling, ...tokenLimit, messages: [{ role: 'system', content: '你是严谨的对话模拟与记忆证据生成器。只返回合法 JSON。' }, { role: 'user', content: prompt }] }),
       });
       const body = await response.text();
       if (!response.ok) {

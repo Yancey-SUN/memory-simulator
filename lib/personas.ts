@@ -84,11 +84,11 @@ export function buildProfileForPrompt(id: string): string {
 export function activityPlan(activityClass: 'A' | 'B' | 'C' | 'D', days: number, scale: number) {
   const perWeek = { A: 7, B: 3.5, C: 0.9, D: 0.35 }[activityClass];
   const baseBubbles = { A: 22, B: 16, C: 22, D: 13 }[activityClass];
-  const sessionCount = Math.max(activityClass === 'D' ? 0 : 1, Math.round((days / 7) * perWeek * (scale / 100)));
+  const lowFrequencyMinimum = activityClass === 'D' && days >= 21 ? 1 : 0;
+  const sessionCount = Math.max(activityClass === 'D' ? lowFrequencyMinimum : 1, Math.round((days / 7) * perWeek * (scale / 100)));
   return {
     sessionCount: Math.min(sessionCount, 18),
     bubblesPerSession: Math.max(5, Math.round(baseBubbles * Math.max(scale, 20) / 100)),
     baseline: activityClass === 'A' ? '通常每天 30–80 条，生活流高频互动' : activityClass === 'B' ? '通常每周 3–4 天，每个活跃日 15–35 条' : activityClass === 'C' ? '通常每 1–2 周因事件集中聊一次' : '通常每月 1–3 次，常从命理问题进入',
   };
 }
-
