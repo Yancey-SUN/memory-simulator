@@ -4,6 +4,7 @@ import { activityPlan, buildProfileForPrompt, getPersonaSource, getPersonaSummar
 import { buildConversationPrompt } from '@/lib/prompts';
 import { createRun, getRunData, listRuns, saveFailure, savePersonaResult } from '@/lib/store';
 import type { ChatMessage, MemoryFragment, Phase } from '@/lib/types';
+import { BUILTIN_RUN_ID, buildBuiltinRun } from '@/lib/builtin-simulation';
 
 export const runtime = 'edge';
 
@@ -94,12 +95,14 @@ export async function GET(request: NextRequest) {
     const runId = request.nextUrl.searchParams.get('runId');
     const personaId = request.nextUrl.searchParams.get('personaId') || undefined;
     if (runId) {
+      if (runId === BUILTIN_RUN_ID) return NextResponse.json(buildBuiltinRun(personaId));
       const data = await getRunData(runId, personaId);
       if (!data) return NextResponse.json({ error: '实验不存在' }, { status: 404 });
       return NextResponse.json({ ...data, personaSource: personaId ? getPersonaSource(personaId) : undefined });
     }
     if (personaId) return NextResponse.json({ personaSource: getPersonaSource(personaId), profile: getPersonaSummaries().find((item) => item.id === personaId) });
-    return NextResponse.json({ personas: getPersonaSummaries(), runs: await listRuns() });
+    const storedRuns = await listRuns();
+    return NextResponse.json({ personas: getPersonaSummaries(), runs: [buildBuiltinRun().run, ...storedRuns.filter((run) => run.id !== BUILTIN_RUN_ID)] });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : '读取失败' }, { status: 500 });
   }
