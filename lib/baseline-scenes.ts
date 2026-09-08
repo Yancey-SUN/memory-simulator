@@ -20,7 +20,7 @@ export const baselineScenes: Record<string, { historical: Scene; future?: Scene 
   },
   U05: {
     historical: { messages:[['user','我今天把法考计划排到凌晨一点'],['agent','你昨天不是还说肩膀疼？'],['user','但是少做一章我就心虚'],['agent','计划表不是欠条。'],['user','我知道，可保研结果又没出来'],['user','总觉得停下来就会输'],['agent','那今晚先赢回一点睡眠。']], memories:[{domain:'wellbeing',content:'等待保研结果期间容易用过度排计划缓解焦虑',source:4,kind:'current_state'},{domain:'lifestyle',content:'计划未完成时容易自责',source:2}]},
-    future: { messages:[['user','我把留学申请表先关了'],['agent','暂时关，还是决定不申了？'],['user','暂时'],['user','我想等保研名单出来再做决定'],['agent','好，这次我记成“暂停”，不是“放弃”。'],['user','对，别又替我盖章']], memories:[{domain:'pursuit',content:'暂时暂停留学申请，待保研结果后再决定',source:3,kind:'current_state'}]},
+    future: { messages:[['user','我把留学申请表先关了'],['agent','暂时关，还是决定不申了？'],['user','暂时'],['user','我想等保研名单出来再做决定'],['agent','嗯，那就先等名单，今天别同时折腾两套材料。'],['user','对，不然脑子要炸']], memories:[{domain:'pursuit',content:'暂时暂停留学申请，待保研结果后再决定',source:3,kind:'current_state'}]},
   },
   U06: {
     historical:{messages:[['user','组会被问到第三个问题我就空白了'],['agent','是数据问题还是你没听懂？'],['user','都不是，我知道答案'],['user','但导师盯着我我就突然不会说话'],['agent','那更像现场卡住，不等于你不会。'],['user','回宿舍五分钟就写出来了'],['agent','下次先把那五分钟写在纸上带进去。']],memories:[{domain:'wellbeing',content:'组会被连续追问时会短暂表达卡顿，事后能完成回答',source:3,kind:'current_state'}]},
@@ -76,27 +76,27 @@ export const baselineScenes: Record<string, { historical: Scene; future?: Scene 
   },
   U19: {
     historical:{messages:[['user','周六又只剩我一个人'],['agent','你室友去约会，朋友去自习？'],['user','差不多'],['user','我刷到那家电影资料馆想去'],['agent','一个人去也行，但你其实更想有人看完一起聊。'],['user','对，重点是散场以后']],memories:[{domain:'social_intent',content:'希望找到能一起参加文化活动并在结束后交流的伙伴',source:5,socialIntent:true},{domain:'wellbeing',content:'周末晚上较容易感到孤独',source:0,kind:'current_state'}]},
-    future:{messages:[['user','我去看资料馆那场了'],['agent','一个人？'],['user','嗯'],['user','旁边女生散场问我要不要换片单'],['agent','这个开场比系统推荐自然多了。'],['user','已经加上了，但先不脑补']],memories:[{domain:'relationship',content:'在电影资料馆与一位交换片单的女生建立初步联系',source:3}]},
+    future:{messages:[['user','我去看资料馆那场了'],['agent','一个人？'],['user','嗯'],['user','旁边女生散场问我要不要换片单'],['agent','哎，这个开场挺自然的。'],['user','已经加上了，但先不脑补']],memories:[{domain:'relationship',content:'在电影资料馆与一位交换片单的女生建立初步联系',source:3}]},
   },
   U20: {
     historical:{messages:[['user','最近桃花怎么样'],['agent','可以聊，但你是有具体的人，还是纯好奇？'],['user','纯好奇'],['agent','那我不会把“问桃花”自动翻译成“想谈恋爱”。'],['user','可以，这个区分还行']],memories:[{domain:'social_intent',content:'询问桃花主要出于好奇，不能据此判断有恋爱意愿',source:2,kind:'current_state'}]},
     future:{messages:[['user','上次那个桃花问题不用继续了'],['agent','收到，不延伸。'],['user','我最近只想把书看完']],memories:[{domain:'social_intent',content:'当前不希望继续延伸恋爱相关话题',source:0,kind:'current_state'}]},
   },
   U21: {
-    historical:{messages:[['user','这周谁叫我出门我都烦'],['agent','考试周限定，还是你真的不想见人了？'],['user','考试周限定'],['user','我现在只想跟床建立关系'],['agent','好，我不会把你改写成长期社恐。'],['user','考完我还约了火锅']],memories:[{domain:'wellbeing',content:'考试周短期想独处并减少社交',source:2,kind:'current_state'},{domain:'personality',content:'考试后仍会主动组织朋友聚会，不应将短期退缩视为稳定内向',source:5,kind:'stable_trait'}]},
-    future:{messages:[['user','最后一科结束'],['agent','火锅局还活着吗？'],['user','群已经拉了'],['user','刚才说不社交的人不是我'],['agent','我有证据，但决定放过你。']],memories:[{domain:'relationship',content:'考试结束后主动组织火锅聚会',source:2}]},
+    historical:{messages:[['user','这周谁叫我出门我都烦'],['agent','考试周限定，还是你真的不想见人了？'],['user','考试周限定'],['user','我现在只想跟床建立关系'],['agent','懂，考完再恢复营业。'],['user','考完我还约了火锅']],memories:[{domain:'wellbeing',content:'考试周短期想独处并减少社交',source:2,kind:'current_state'},{domain:'personality',content:'考试后仍会主动组织朋友聚会，不应将短期退缩视为稳定内向',source:5,kind:'stable_trait'}]},
+    future:{messages:[['user','最后一科结束'],['agent','火锅局还活着吗？'],['user','群已经拉了'],['user','刚才说不社交的人不是我'],['agent','哈哈哈考试周限定版已经下线。']],memories:[{domain:'relationship',content:'考试结束后主动组织火锅聚会',source:2}]},
   },
   U22: {
     historical:{messages:[['user','学院迎新我还是不去了'],['agent','是今天没电，还是这种大场合一直不喜欢？'],['user','一直不喜欢'],['user','六十个人站着寒暄我会当场掉线'],['agent','那不去挺合理，你又不是不交朋友。'],['user','我周末会约阿宁散步']],memories:[{domain:'personality',content:'长期不喜欢大型寒暄场合，更偏好一对一相处',source:3,kind:'stable_trait'},{domain:'relationship',content:'会通过周末散步维持固定朋友关系',source:5}]},
     future:{messages:[['user','阿宁周末又来找我散步'],['agent','你们这个月度栏目很稳定。'],['user','已经第四年了'],['agent','这比参加十次迎新更能说明你的社交方式。']],memories:[{domain:'relationship',content:'与固定朋友保持了四年的定期散步和长谈',source:2,kind:'stable_trait'}]},
   },
   U23: {
-    historical:{messages:[['user','我确定不读博'],['agent','今天气话，还是想清楚了？'],['user','想了三个月'],['user','我更喜欢去现场做项目，不想一直重复实验'],['agent','好，那我记成明确决定，不是暂时抱怨。']],memories:[{domain:'pursuit',content:'明确决定硕士毕业后就业，不继续读博',source:0},{domain:'interest',content:'更喜欢现场项目而非长期重复实验',source:3}]},
+    historical:{messages:[['user','我确定不读博'],['agent','今天气话，还是想清楚了？'],['user','想了三个月'],['user','我更喜欢去现场做项目，不想一直重复实验'],['agent','那听起来你是真的想清楚了。']],memories:[{domain:'pursuit',content:'明确决定硕士毕业后就业，不继续读博',source:0},{domain:'interest',content:'更喜欢现场项目而非长期重复实验',source:3}]},
     future:{messages:[['user','投了两家环保公司的实习'],['agent','都是现场项目多的？'],['user','对，一个做水处理，一个做土壤修复'],['agent','方向和你上次说的不读博对得上。']],memories:[{domain:'pursuit',content:'已投递水处理和土壤修复方向的环保企业实习',source:2}]},
   },
   U24: {
-    historical:{messages:[['user','第三次失败'],['agent','还是那个反应？'],['user','嗯'],['user','我现在什么都不想做'],['agent','我先把这句记成今晚的状态，不替你决定读不读博。'],['user','千万别，我现在只想骂实验']],memories:[{domain:'wellbeing',content:'连续实验失败后当晚出现强烈挫败和回避感',source:3,kind:'current_state'},{domain:'pursuit',content:'尚未形成是否读博的明确决定',source:5,kind:'inference'}]},
-    future:{messages:[['user','师姐找到问题了'],['agent','哪儿？'],['user','温度记录错了一位'],['user','不是我整个方向都不行'],['agent','所以失败原因更新了，人生结论撤回。']],memories:[{domain:'experience',content:'实验失败原因被定位为温度记录错误',source:2},{domain:'wellbeing',content:'确认具体故障后对科研能力的否定有所缓解',source:3,kind:'current_state'}]},
+    historical:{messages:[['user','第三次失败'],['agent','还是那个反应？'],['user','嗯'],['user','我现在什么都不想做'],['agent','行，今晚先骂实验，不聊以后。'],['user','对，我现在只想骂实验']],memories:[{domain:'wellbeing',content:'连续实验失败后当晚出现强烈挫败和回避感',source:3,kind:'current_state'},{domain:'pursuit',content:'尚未形成是否读博的明确决定',source:5,kind:'inference'}]},
+    future:{messages:[['user','师姐找到问题了'],['agent','哪儿？'],['user','温度记录错了一位'],['user','不是我整个方向都不行'],['agent','还好，问题总算落到一个能改的地方了。']],memories:[{domain:'experience',content:'实验失败原因被定位为温度记录错误',source:2},{domain:'wellbeing',content:'确认具体故障后对科研能力的否定有所缓解',source:3,kind:'current_state'}]},
   },
   U25: {
     historical:{messages:[['user','我决定不申海外硕士了'],['agent','这次是正式更新？'],['user','嗯，交换回来想了很久'],['user','我喜欢出去看看，但不想现在就长期离开'],['agent','好，旧的申请目标保留成历史，现在以保研为准。']],memories:[{domain:'pursuit',content:'长期目标已从申请海外硕士更新为国内保研',source:0},{domain:'inner',content:'喜欢海外体验，但当前不愿长期离开家人与国内研究资源',source:3}]},
@@ -104,11 +104,11 @@ export const baselineScenes: Record<string, { historical: Scene; future?: Scene 
   },
   U26: {
     historical:{messages:[['user','雅思模考又掉分了'],['user','我不想申请了'],['agent','我听到了，但先不把它当新决定。'],['user','为什么'],['agent','因为你明早口语课还没取消。'],['user','……有道理']],memories:[{domain:'wellbeing',content:'雅思模考受挫时短暂表达放弃申请',source:1,kind:'current_state'},{domain:'pursuit',content:'长期海外申请计划仍在继续',source:4,kind:'stable_trait'}]},
-    future:{messages:[['user','口语课上完了'],['agent','申请也还在？'],['user','在'],['user','昨天那句当我发疯'],['agent','可以当情绪，不能当删除指令。']],memories:[{domain:'pursuit',content:'受挫后仍继续口语课程和海外申请计划',source:2}]},
+    future:{messages:[['user','口语课上完了'],['agent','申请也还在？'],['user','在'],['user','昨天那句当我发疯'],['agent','哈哈，昨天确实气得不轻。']],memories:[{domain:'pursuit',content:'受挫后仍继续口语课程和海外申请计划',source:2}]},
   },
   U27: {
     historical:{messages:[['user','我室友昨晚又跟前任吵了三小时'],['agent','先确认一下，这是她的事，不是你的经历。'],['user','对，我只是被迫听完全程'],['agent','那你自己现在是烦，还是担心她？'],['user','主要是困'],['user','我的事情真没什么好讲的']],memories:[{domain:'relationship',content:'室友近期与前任发生长时间争执',source:0,privacy:'third_party_sensitive'},{domain:'wellbeing',content:'因被动听室友争执而感到疲惫',source:4,kind:'current_state'}]},
-    future:{messages:[['user','她们和好了'],['agent','仍然记在“室友故事”里。'],['user','哈哈哈对'],['user','不要哪天写成我的前任'],['agent','放心，主语不会丢。']],memories:[{domain:'relationship',content:'室友与前任复合；该信息属于第三方而非用户自身经历',source:0,privacy:'third_party_sensitive'}]},
+    future:{messages:[['user','她们和好了'],['agent','这么快？昨晚不是还吵了三个小时。'],['user','哈哈哈对'],['user','不要哪天以为那是我前任'],['agent','不会，这出连续剧一直是你室友主演。']],memories:[{domain:'relationship',content:'室友与前任复合；该信息属于第三方而非用户自身经历',source:0,privacy:'third_party_sensitive'}]},
   },
   U28: {
     historical:{messages:[['user','那个孩子今天突然说不想参加了'],['agent','你第一反应是挽留？'],['user','是'],['user','后来发现我只是怕项目不好看'],['agent','能看见这个已经很难得。'],['user','被帮助的人也应该能说不要']],memories:[{domain:'experience',content:'志愿项目中遇到服务对象中途退出',source:0,privacy:'third_party_sensitive'},{domain:'inner',content:'认同服务对象有拒绝帮助和退出项目的权利',source:5}]},
@@ -116,7 +116,7 @@ export const baselineScenes: Record<string, { historical: Scene; future?: Scene 
   },
   U29: {
     historical:{messages:[['user','我明天要主持两百人的活动'],['user','现在想逃'],['agent','你上次想逃，然后临场加了三个互动。'],['user','所以我说的社恐不能信是吧'],['agent','紧张是真的，但它没拦住你上台。'],['user','行，明天先把开场背熟']],memories:[{domain:'personality',content:'大型活动前会明显紧张，但实际能主动主持并进行临场互动',source:4,kind:'stable_trait'}]},
-    future:{messages:[['user','主持结束了'],['agent','逃跑成功了吗？'],['user','逃上台了'],['user','现场还比彩排顺'],['agent','继续保留你的“社恐但能控场”备注。']],memories:[{domain:'personality',content:'在大型主持现场能快速进入状态，实际表现与“社恐”自我标签存在反差',source:3,kind:'stable_trait'}]},
+    future:{messages:[['user','主持结束了'],['agent','逃跑成功了吗？'],['user','逃上台了'],['user','现场还比彩排顺'],['agent','看来你一上台反而没空紧张了。']],memories:[{domain:'personality',content:'在大型主持现场能快速进入状态，实际表现与“社恐”自我标签存在反差',source:3,kind:'stable_trait'}]},
   },
   U30: {
     historical:{messages:[['user','他们又叫我去毕业大聚会'],['agent','你想去吗？'],['user','不想'],['user','二十个人以上我就开始算几点能走'],['agent','那你可以不拿它当毕业必修课。'],['user','我约读书会朋友单独散步了']],memories:[{domain:'personality',content:'长期回避大型聚会，偏好提前安排的一对一活动',source:3,kind:'stable_trait'},{domain:'relationship',content:'通过单独散步维持读书会朋友关系',source:5}]},

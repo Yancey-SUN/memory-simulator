@@ -2,7 +2,7 @@ import { env } from 'cloudflare:workers';
 import { NextRequest, NextResponse } from 'next/server';
 import { activityPlan, buildProfileForPrompt, getPersonaSource, getPersonaSummaries } from '@/lib/personas';
 import { buildConversationPrompt } from '@/lib/prompts';
-import { createRun, getRunData, listRuns, renameRun, saveFailure, savePersonaResult } from '@/lib/store';
+import { createRun, getRunData, listPromptTemplates, listRuns, renameRun, saveFailure, savePersonaResult, savePromptTemplate, updateRunPrompt } from '@/lib/store';
 import type { ChatMessage, MemoryFragment, Phase } from '@/lib/types';
 import { BUILTIN_RUN_ID, buildBuiltinRun } from '@/lib/builtin-simulation';
 
@@ -105,14 +105,21 @@ export async function GET(request: NextRequest) {
     const runId = request.nextUrl.searchParams.get('runId');
     const personaId = request.nextUrl.searchParams.get('personaId') || undefined;
     if (runId) {
-      if (runId === BUILTIN_RUN_ID) return NextResponse.json(buildBuiltinRun(personaId));
+      if (runId === BUILTIN_RUN_ID) {
+        const data = buildBuiltinRun(personaId);
+        const prompt = (await listPromptTemplates()).find((item) => item.id === data.run.promptTemplateId);
+        return NextResponse.json(prompt ? { ...data, run: { ...data.run, promptName: prompt.name, userPrompt: prompt.userPrompt, agentPrompt: prompt.agentPrompt } } : data);
+      }
       const data = await getRunData(runId, personaId);
       if (!data) return NextResponse.json({ error: '实验不存在' }, { status: 404 });
       return NextResponse.json({ ...data, personaSource: personaId ? getPersonaSource(personaId) : undefined });
     }
     if (personaId) return NextResponse.json({ personaSource: getPersonaSource(personaId), profile: getPersonaSummaries().find((item) => item.id === personaId) });
-    const storedRuns = await listRuns();
-    return NextResponse.json({ personas: getPersonaSummaries(), runs: [buildBuiltinRun().run, ...storedRuns.filter((run) => run.id !== BUILTIN_RUN_ID)] });
+    const [storedRuns, promptTemplates] = await Promise.all([listRuns(), listPromptTemplates()]);
+    const builtin = buildBuiltinRun().run;
+    const builtinPrompt = promptTemplates.find((item) => item.id === builtin.promptTemplateId);
+    const builtinRun = builtinPrompt ? { ...builtin, promptName: builtinPrompt.name, userPrompt: builtinPrompt.userPrompt, agentPrompt: builtinPrompt.agentPrompt } : builtin;
+    return NextResponse.json({ personas: getPersonaSummaries(), promptTemplates, runs: [builtinRun, ...storedRuns.filter((run) => run.id !== BUILTIN_RUN_ID)] });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : '读取失败' }, { status: 500 });
   }
@@ -124,8 +131,22 @@ export async function POST(request: NextRequest) {
     if (input.action === 'create_run') {
       const selectedIds = Array.isArray(input.selectedIds) ? input.selectedIds.filter((id: unknown) => /^U\d{2}$/.test(String(id))) : [];
       if (!selectedIds.length) throw new Error('请至少选择 1 个用户');
-      const run = await createRun({ name: String(input.name || `Memory 实验 ${new Date().toLocaleDateString('zh-CN')}`), provider: String(input.provider || 'deepseek'), model: String(input.model || 'deepseek-chat'), historicalDays: Math.max(7, Math.min(90, Number(input.historicalDays) || 28)), futureDays: 14, densityScale: Math.max(10, Math.min(100, Number(input.densityScale) || 30)), selectedIds });
+      const run = await createRun({ name: String(input.name || `Memory 实验 ${new Date().toLocaleDateString('zh-CN')}`), provider: String(input.provider || 'deepseek'), model: String(input.model || 'deepseek-chat'), historicalDays: Math.max(7, Math.min(90, Number(input.historicalDays) || 28)), futureDays: 14, densityScale: Math.max(10, Math.min(100, Number(input.densityScale) || 30)), selectedIds, promptTemplateId: String(input.promptTemplateId || ''), promptName: String(input.promptName || ''), userPrompt: String(input.userPrompt || ''), agentPrompt: String(input.agentPrompt || '') });
       return NextResponse.json({ run });
+    }
+    if (input.action === 'save_prompt') {
+      const name = String(input.name || '').trim();
+      const userPrompt = String(input.userPrompt || '').trim();
+      const agentPrompt = String(input.agentPrompt || '').trim();
+      if (!name || !userPrompt || !agentPrompt) throw new Error('Prompt 名称、用户 Prompt 和 Agent Prompt 都不能为空');
+      const prompt = await savePromptTemplate({ id: input.id ? String(input.id) : undefined, name, userPrompt, agentPrompt });
+      return NextResponse.json({ prompt });
+    }
+    if (input.action === 'update_run_prompt') {
+      const runId = String(input.runId || '');
+      if (!runId || runId === BUILTIN_RUN_ID) throw new Error('基线版本通过默认 Prompt 模板更新');
+      await updateRunPrompt(runId, { id: String(input.promptTemplateId || ''), name: String(input.promptName || ''), userPrompt: String(input.userPrompt || ''), agentPrompt: String(input.agentPrompt || '') });
+      return NextResponse.json({ ok: true });
     }
     if (input.action === 'rename_run') {
       const runId = String(input.runId || '');
@@ -137,8 +158,9 @@ export async function POST(request: NextRequest) {
     if (input.action === 'simulate_persona') {
       const runId = String(input.runId || '');
       const personaId = String(input.personaId || '');
-      const profile = getPersonaSummaries().find((item) => item.id === personaId);
-      if (!runId || !profile) throw new Error('实验或用户参数无效');
+      const foundProfile = getPersonaSummaries().find((item) => item.id === personaId);
+      if (!runId || !foundProfile) throw new Error('实验或用户参数无效');
+      const profile = foundProfile;
       const provider = String(input.provider || 'deepseek');
       const defaults = providerDefaults[provider] ?? providerDefaults.deepseek;
       const model = String(input.model || defaults.model);
@@ -150,16 +172,33 @@ export async function POST(request: NextRequest) {
       const futureDays = 14;
       const scale = Math.max(10, Math.min(100, Number(input.densityScale) || 30));
       const profileJson = buildProfileForPrompt(personaId);
-      const historicalPlan = activityPlan(profile.activityClass, historicalDays, scale);
-      const futurePlan = activityPlan(profile.activityClass, futureDays, scale);
+      const runData = await getRunData(runId);
+      if (!runData) throw new Error('实验不存在');
+      const userPrompt = runData.run.userPrompt;
+      const agentPrompt = runData.run.agentPrompt;
       let stage: Phase = 'historical';
       try {
-        const historicalPayload = historicalPlan.sessionCount ? await callModel(provider, model, baseUrl, apiKey, buildConversationPrompt({ profileJson, phase: 'historical', startDate: dateKey(-historicalDays), endDate: dateKey(-1), ...historicalPlan, agent: profile.agent })) : { sessions: [], memory_fragments: [] };
-        const historical = normalizePhase(historicalPayload, 'historical', runId, personaId, 0);
+        async function simulateWindow(phase: Phase, totalDays: number, firstOffset: number, sequenceStart: number, startingTranscript = '') {
+          const messages: ChatMessage[] = [];
+          const memories: MemoryFragment[] = [];
+          let nextSequence = sequenceStart;
+          let transcript = startingTranscript;
+          for (let processed = 0; processed < totalDays; processed += 7) {
+            const chunkDays = Math.min(7, totalDays - processed);
+            const plan = activityPlan(profile.activityClass, chunkDays, scale);
+            if (!plan.sessionCount) continue;
+            const startOffset = firstOffset + processed;
+            const payload = await callModel(provider, model, baseUrl, apiKey, buildConversationPrompt({ profileJson, phase, startDate: dateKey(startOffset), endDate: dateKey(startOffset + chunkDays - 1), ...plan, agent: profile.agent, priorTranscript: transcript, userPrompt, agentPrompt }));
+            const normalized = normalizePhase(payload, phase, runId, personaId, nextSequence);
+            messages.push(...normalized.messages); memories.push(...normalized.memories); nextSequence = normalized.nextSequence;
+            transcript = [...messages].slice(-50).map((message) => `${message.speaker === 'user' ? profile.name : 'Agent'}：${message.content}`).join('\n');
+          }
+          return { messages, memories, nextSequence };
+        }
+        const historical = await simulateWindow('historical', historicalDays, -historicalDays, 0);
         stage = 'future';
-        const priorTranscript = historical.messages.slice(-60).map((m) => `${m.speaker === 'user' ? profile.name : profile.agent.name}：${m.content}`).join('\n');
-        const futurePayload = futurePlan.sessionCount ? await callModel(provider, model, baseUrl, apiKey, buildConversationPrompt({ profileJson, phase: 'future', startDate: dateKey(0), endDate: dateKey(futureDays - 1), ...futurePlan, agent: profile.agent, priorTranscript })) : { sessions: [], memory_fragments: [] };
-        const future = normalizePhase(futurePayload, 'future', runId, personaId, historical.nextSequence);
+        const priorTranscript = historical.messages.slice(-60).map((m) => `${m.speaker === 'user' ? profile.name : 'Agent'}：${m.content}`).join('\n');
+        const future = await simulateWindow('future', futureDays, 0, historical.nextSequence, priorTranscript);
         const messages = [...historical.messages, ...future.messages];
         const memories = [...historical.memories, ...future.memories];
         if (!messages.length) throw new Error('模型未生成有效对话');

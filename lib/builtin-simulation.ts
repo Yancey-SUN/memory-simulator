@@ -1,6 +1,7 @@
 import { getPersonaSource, getPersonaSummaries } from './personas';
 import type { ChatMessage, MemoryFragment, Phase, RunRecord } from './types';
 import { baselineScenes } from './baseline-scenes';
+import { DEFAULT_AGENT_PROMPT, DEFAULT_PROMPT_TEMPLATE, DEFAULT_USER_PROMPT } from './prompts';
 
 export const BUILTIN_RUN_ID = 'campus-32-baseline-v1';
 const anchor = '2026-09-08';
@@ -45,7 +46,7 @@ function compact(text: string, max = 42) {
 }
 
 const qualifiers = ['也没到特别严重', '就是今天突然又想到了', '我自己也还没完全想明白', '先别给我上价值哈哈', '可能过两天又变了', '反正现在是这么觉得', '我嘴上说无所谓，其实还是会想', '说完好像也没轻松多少', '你先别急着分析', '我就是随口跟你讲一下'];
-const reactions = ['我先接住，不急着给它定性。', '嗯，这次和你上回说的语气不太一样。', '这件事确实挺占脑子的。', '可以，先不解决，讲完也算。', '你这句“无所谓”听着就不太无所谓。', '我不替你总结，你继续。', '这倒挺像你会卡住的地方。', '等等，这里好像有个变化。', '先记下今天这个版本，之后再看。', '那今天就不用把答案想完整。'];
+const reactions = ['嗯，我在听。', '你这次听起来比上回轻松一点。', '这件事确实挺占脑子的。', '可以，今天先不解决。', '你这句“无所谓”听着就不太无所谓。', '然后呢？', '难怪你会卡在这儿。', '等等，这里好像有变化。', '过几天再看看你会不会改主意。', '那今天不用把答案想完整。'];
 const shortReplies = ['哈哈可以', '那倒也是', '行，先这样', '我记得', '懂了', '有点意思', '这句是真的', '先不催你', '然后呢', '你慢慢说'];
 const drifts = [
   ['对了，我刚刚还差点坐过站', '你这一路想得也太投入了'],
@@ -70,16 +71,64 @@ const naturalExtras: Array<Array<['user'|'agent', string]>> = [
   [['user','校园单车坐垫今天烫得离谱'],['agent','秋天只是日历上的，坐垫不同意。'],['user','我站着骑到教学楼'],['agent','今日份腿部训练完成。']],
   [['user','洗衣机又吃了我一只袜子'],['agent','宿舍里已经有一个单只袜子收藏馆了吧。'],['user','三只，颜色还都不一样'],['agent','再攒一只可以随机配对。']],
   [['user','我刚在教室捡到一张写满公式的草稿'],['agent','字好看到舍不得扔那种？'],['user','对，像打印出来的'],['agent','而你的草稿像地震监测图。']],
-  [['user','社团群突然发了九十九加'],['agent','有正事吗？'],['user','点进去全在接龙表情包'],['agent','信息密度非常稳定地等于零。']],
+  [['user','社团群突然发了九十九加'],['agent','有正事吗？'],['user','点进去全在接龙表情包'],['agent','好，白点进去一趟哈哈。']],
   [['user','学校门口新开的店排到拐弯'],['agent','你去凑热闹了吗？'],['user','看了一眼价格就走了'],['agent','完成零元探店。']],
   [['user','今天有人把校园卡落在打印店'],['agent','你交给老板了？'],['user','嗯，五分钟后那个人冲回来找'],['agent','你见证了一次小型失而复得。']],
+  [['user','早八老师提前十二分钟下课'],['agent','这十二分钟听起来像放假。'],['user','全班收书的声音特别整齐'],['agent','难得的集体默契。']],
+  [['user','我点的面少放辣，结果红得发亮'],['agent','老板对“少”有自己的理解。'],['user','吃了两口开始冒汗'],['agent','今天的午饭附赠有氧。']],
+  [['user','宿舍门口那棵树突然全黄了'],['agent','昨天路过还没这么明显。'],['user','对，像一晚上换了皮肤'],['agent','这次形容得挺准。']],
+  [['user','选修课老师放了半节课电影'],['agent','你居然没睡？'],['user','片子还挺好看，我记下名字了'],['agent','这门课暂时值得五星。']],
+  [['user','有人在操场边唱歌，跑调但特别投入'],['agent','你多听了一圈？'],['user','对，第二圈他还在唱'],['agent','体力和勇气都很稳定。']],
+  [['user','我今天第一次抢到靠窗的校车座'],['agent','景色有值回早起吗？'],['user','有，路过江边的时候还挺好看'],['agent','那至少这趟没白困。']],
+  [['user','打印店老板一眼就知道我要打作业'],['agent','因为你每次都在截止前出现。'],['user','还问我这次怎么提前了两小时'],['agent','进步得到了官方认证。']],
+  [['user','楼下有人练了一下午同一段吉他'],['agent','现在你也会弹了吗？'],['user','旋律会哼了，吉他不会'],['agent','被动加入排练。']],
+  [['user','我买的酸奶忘在自习室了'],['agent','回去找了吗？'],['user','回去了，它还在桌角等我'],['agent','今天没有发生酸奶失踪案。']],
+  [['user','今天点名刚好从我后一个人开始'],['agent','你逃过一劫？'],['user','不，我昨晚背到两点'],['agent','准备充分的时候偏偏不抽。']],
+  [['user','社团招新送的帆布袋居然挺好看'],['agent','所以你是为袋子扫码的？'],['user','先拿袋子，再了解社团'],['agent','顺序非常诚实。']],
+  [['user','我的耳机只剩左边有声音'],['agent','现在所有歌都是单声道。'],['user','人声像站在我左肩唱'],['agent','沉浸式得有点过头。']],
+  [['user','食堂今天把米饭压得像砖'],['agent','可以直接拿去盖宿舍。'],['user','我吃到一半就投降了'],['agent','建筑材料不建议食用。']],
+  [['user','刚才路过辩论队，吵得像真的一样'],['agent','你站门口听完了吗？'],['user','听了五分钟，差点想帮一边说话'],['agent','围观群众险些转职。']],
+  [['user','宿舍楼下新装了台咖啡机'],['agent','味道怎么样？'],['user','第一口像焦掉的中药'],['agent','至少提神效果听起来很强。']],
+  [['user','我在教学楼绕了三圈没找到教室'],['agent','最后在哪？'],['user','就在我第一次路过的门后面'],['agent','校园版回到原点。']],
+  [['user','今天风把我的伞吹反了两次'],['agent','第三次它是不是就习惯了？'],['user','第三次我直接收起来淋雨'],['agent','你先结束了这段拉扯。']],
+  [['user','寝室突然停电，整层都在叫'],['agent','你们第一反应不是开手电？'],['user','先叫完才想起来手机'],['agent','流程很有仪式感。']],
+  [['user','我在旧书摊翻到一本有很多批注的书'],['agent','批注有意思吗？'],['user','比正文还刻薄，我看了半小时'],['agent','你买的是书还是陌生人的吐槽。']],
+  [['user','今天体育课分组我又最后一个被挑'],['agent','这次是什么项目？'],['user','排球，我发球还飞到隔壁场'],['agent','至少覆盖范围很广。']],
+  [['user','我刚把水杯落在另一栋楼'],['agent','今天第几次折返跑？'],['user','第三次，我怀疑脑子没带出门'],['agent','水杯替你刷了步数。']],
+  [['user','食堂新品照片看着特别高级'],['agent','实物呢？'],['user','像照片经历了经济危机'],['agent','摄影师已经尽力了。']],
+  [['user','老师突然说下周不上课'],['agent','教室里有人鼓掌吗？'],['user','没人敢，但所有人都坐直了'],['agent','快乐让人姿势端正。']],
+  [['user','快递盒大得我以为买错了'],['agent','里面是什么？'],['user','一支笔，剩下全是空气袋'],['agent','这支笔住了单间。']],
+  [['user','我今天在操场看见有人遛兔子'],['agent','兔子配合吗？'],['user','不配合，人跟在后面跑'],['agent','到底谁遛谁很难说。']],
+  [['user','宿舍窗外那只鸟每天六点准时叫'],['agent','比你闹钟可靠。'],['user','但我不能给它按掉'],['agent','大自然没有稍后提醒。']],
+  [['user','我排队买饭的时候前面两个人吵起来了'],['agent','吵什么？'],['user','都说对方先让自己插队'],['agent','一场关于礼貌的没礼貌争论。']],
+  [['user','今天晚霞把实验楼玻璃照得特别粉'],['agent','你拍了吗？'],['user','拍了，但手机里灰扑扑的'],['agent','有些颜色就是拒绝被带走。']],
+  [['user','自动门今天把我关在中间了'],['agent','你走太快还是它反应太慢？'],['user','我退一步它又开了，来回三次'],['agent','你们进行了一段尴尬的双人舞。']],
+  [['user','我在课桌里摸到一颗没拆的糖'],['agent','敢吃吗？'],['user','不敢，拍了照又放回去了'],['agent','留给下一位考古学家。']],
 ];
 
 function extraOffsets(activityClass: string, phase: Phase) {
-  const historical: Record<string, number[]> = { A: [-27, -14, -8, -2], B: [-25, -6], C: [-22], D: [] };
-  const future: Record<string, number[]> = { A: [1, 10], B: [11], C: [], D: [] };
+  const historical: Record<string, number[]> = {
+    A: Array.from({ length: 28 }, (_, index) => index - 28),
+    B: Array.from({ length: 14 }, (_, index) => index * 2 - 28),
+    C: [-22, -7],
+    D: [-17],
+  };
+  const future: Record<string, number[]> = {
+    A: Array.from({ length: 14 }, (_, index) => index),
+    B: [0, 2, 4, 6, 8, 10, 12],
+    C: [6],
+    D: [],
+  };
   return (phase === 'historical' ? historical : future)[activityClass] ?? [];
 }
+
+const socialIntentScenes: Record<string, { messages: Array<['user'|'agent', string]>; content: string; source: number }> = {
+  U01: { messages: [['user','今天下课又是我自己去吃饭'],['agent','你室友时间又都对不上？'],['user','嗯，其实我想找个同校的偶尔一起吃'],['agent','偶尔约，不用每天绑定那种？'],['user','对，还能顺便聊点日常就更好']], content: '希望认识同校、能偶尔一起吃饭并聊日常的稳定朋友', source: 2 },
+  U05: { messages: [['user','法考群今天又有人晒进度'],['agent','看完更焦虑了？'],['user','有点，但我其实想找一个能互相报进度的人'],['agent','不是卷排名，就是到点互相喊一下？'],['user','对，同阶段的人会比较懂']], content: '希望认识同阶段升学伙伴，以轻量互报进度的方式互相督促', source: 2 },
+  U09: { messages: [['user','原型的传感器又卡住了'],['agent','你们组还是没人专门做实现？'],['user','对，真想认识个懂硬件或者开发的人一起做'],['agent','你负责体验和设计，对方把东西真的跑起来？'],['user','对，而且最好也对社会创新有兴趣']], content: '希望认识懂技术实现且关注社会创新的项目伙伴', source: 2 },
+  U13: { messages: [['user','今天投岗位又看到三个用户研究'],['agent','比品牌方向更想点进去？'],['user','嗯，要是能认识正在转这个方向的人就好了'],['agent','可以一起改作品集，也能交换面试消息。'],['user','对，一个人查资料太慢了']], content: '希望认识同阶段、正在转向用户研究的求职伙伴', source: 2 },
+  U17: { messages: [['user','朗读会结束以后大家一下就散了'],['agent','你本来还想继续聊那几篇小说？'],['user','对，我想认识那种能长期聊创作和关系的人'],['agent','不一定马上谈恋爱，先能把话聊下去？'],['user','嗯，但遇到喜欢的人我也不排斥']], content: '希望认识能长期聊创作与关系的人，并对新的恋爱可能保持开放', source: 2 },
+};
 
 function leadFor(fact: Fact, index: number, phase: Phase) {
   const text = compact(fact.content);
@@ -154,9 +203,22 @@ export function buildBuiltinRun(personaFilter?: string) {
         scene.memories.forEach((memory, memoryIndex) => memories.push({ id: `${profile.id}-${phase[0]}-curated-mem-${memoryIndex + 1}`, runId: BUILTIN_RUN_ID, personaId: profile.id, dayKey: day, phase, domain: memory.domain, kind: memory.kind ?? 'fact', content: memory.content, confidence: memory.kind === 'observed' || memory.kind === 'inference' ? .68 : .93, evidenceType: memory.kind === 'observed' || memory.kind === 'inference' || memory.kind === 'stable_trait' ? 'observed' : 'explicit', privacy: memory.privacy ?? 'normal', socialIntent: Boolean(memory.socialIntent), sourceMessageIds: [messageIds[memory.source]].filter(Boolean), status: 'active' }));
         extraOffsets(profile.activityClass, phase).forEach((offset, extraIndex) => {
           const extraDay = dateAt(offset);
-          const extra = naturalExtras[(hash(`${profile.id}-${phase}-${extraIndex}`) + extraIndex) % naturalExtras.length];
+          const phaseShift = phase === 'future' ? 28 : 0;
+          const first = naturalExtras[(Number(profile.id.slice(1)) * 5 + extraIndex + phaseShift) % naturalExtras.length];
+          const intentScene = socialIntentScenes[profile.id];
+          const useIntent = Boolean(intentScene && phase === 'historical' && extraIndex === 12);
+          const extra = useIntent && intentScene ? intentScene.messages : first;
           const extraBase = new Date(`${extraDay}T${String(12 + hash(`${profile.id}-${extraDay}`) % 10).padStart(2, '0')}:00:00+08:00`).getTime();
-          extra.forEach(([speaker, content], messageIndex) => messages.push({ id: `${profile.id}-${phase[0]}-extra-${extraIndex + 1}-${messageIndex + 1}`, runId: BUILTIN_RUN_ID, personaId: profile.id, phase, sessionId: `${profile.id}-${phase}-extra-${extraIndex + 1}`, timestamp: new Date(extraBase + messageIndex * 80_000).toISOString(), speaker, content, sequence: sequence++ }));
+          const extraMessageIds: string[] = [];
+          extra.forEach(([speaker, content], messageIndex) => {
+            const id = `${profile.id}-${phase[0]}-extra-${extraIndex + 1}-${messageIndex + 1}`;
+            extraMessageIds.push(id);
+            messages.push({ id, runId: BUILTIN_RUN_ID, personaId: profile.id, phase, sessionId: `${profile.id}-${phase}-extra-${extraIndex + 1}`, timestamp: new Date(extraBase + messageIndex * 80_000).toISOString(), speaker, content, sequence: sequence++ });
+          });
+          if (useIntent && intentScene) {
+            const sourceIndex = intentScene.source;
+            memories.push({ id: `${profile.id}-${phase[0]}-intent-${extraIndex + 1}`, runId: BUILTIN_RUN_ID, personaId: profile.id, dayKey: extraDay, phase, domain: 'social_intent', kind: 'goal', content: intentScene.content, confidence: .95, evidenceType: 'explicit', privacy: 'normal', socialIntent: true, sourceMessageIds: [extraMessageIds[sourceIndex]].filter(Boolean), status: 'active' });
+          }
         });
       }
       continue;
@@ -216,6 +278,6 @@ export function buildBuiltinRun(personaFilter?: string) {
     const summary = items.map((item) => item.content).join('；');
     for (const item of items) item.dailySummary = summary;
   }
-  const run: RunRecord = { id: BUILTIN_RUN_ID, name: '校园 32 人 · Vouch 自然对话基线', status: 'completed', createdAt: `${anchor}T00:00:00.000Z`, completedAt: `${anchor}T00:30:00.000Z`, provider: 'Codex 直接生成', model: 'Vouch natural prompt v4', historicalDays: 28, futureDays: 14, densityScale: 40, selectedCount: 32, completedCount: 32, failedCount: 0, errorSummary: null };
+  const run: RunRecord = { id: BUILTIN_RUN_ID, name: '校园 32 人 · Vouch 自然对话基线', status: 'completed', createdAt: `${anchor}T00:00:00.000Z`, completedAt: `${anchor}T00:30:00.000Z`, provider: 'Codex 直接生成', model: 'Vouch natural prompt v5', historicalDays: 28, futureDays: 14, densityScale: 50, selectedCount: 32, completedCount: 32, failedCount: 0, errorSummary: null, promptTemplateId: DEFAULT_PROMPT_TEMPLATE.id, promptName: DEFAULT_PROMPT_TEMPLATE.name, userPrompt: DEFAULT_USER_PROMPT, agentPrompt: DEFAULT_AGENT_PROMPT };
   return { run, selectedIds, messages, memories, failures: [], personaSource: personaFilter ? getPersonaSource(personaFilter) : undefined };
 }

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import type { ChatMessage, MemoryFragment, PersonaSummary, RunRecord } from '@/lib/types';
+import type { ChatMessage, MemoryFragment, PersonaSummary, PromptTemplate, RunRecord } from '@/lib/types';
 
 type RunData = { run: RunRecord; selectedIds: string[]; messages: ChatMessage[]; memories: MemoryFragment[]; failures: Record<string, unknown>[]; personaSource?: any };
 const providerModels: Record<string, string> = { deepseek: 'deepseek-chat', openai: 'gpt-5-mini', qwen: 'qwen-plus', moonshot: 'moonshot-v1-32k', siliconflow: 'deepseek-ai/DeepSeek-V3' };
@@ -18,6 +18,7 @@ function downloadJson(filename: string, value: unknown) {
 }
 
 function ActivityChart({ messages, compact = false }: { messages: ChatMessage[]; compact?: boolean }) {
+  const [hovered, setHovered] = useState<{ date: string; value: number } | null>(null);
   const points = useMemo(() => {
     const map = new Map<string, number>();
     for (const message of messages) { const key = message.timestamp.slice(0, 10); map.set(key, (map.get(key) || 0) + 1); }
@@ -27,7 +28,7 @@ function ActivityChart({ messages, compact = false }: { messages: ChatMessage[];
     return result;
   }, [messages]);
   const visible = points.slice(-42); const max = Math.max(...visible.map((point) => point.value), 1);
-  return <div className={`activity-wrap ${compact ? 'compact' : ''}`}><div className="activity-chart" aria-label="每日消息活跃度">{visible.map((point, index) => <i key={point.date} className={index >= visible.length - 14 ? 'future-bar' : ''} style={{ height: `${Math.max(4, point.value / max * 100)}%` }} title={`${point.date} · ${point.value} 条消息`} />)}</div>{!compact && visible.length > 1 && <div className="activity-axis"><span>{visible[0].date.slice(5)}</span><span>悬停看每日数据</span><span>{visible.at(-1)!.date.slice(5)}</span></div>}</div>;
+  return <div className={`activity-wrap ${compact ? 'compact' : ''}`}><div className="activity-chart" aria-label="每日消息活跃度">{visible.map((point, index) => <i key={point.date} className={index >= visible.length - 14 ? 'future-bar' : ''} style={{ height: `${Math.max(4, point.value / max * 100)}%` }} onMouseEnter={() => setHovered(point)} onMouseLeave={() => setHovered(null)} />)}</div>{!compact && hovered && <div className="activity-tooltip">{hovered.date} · {hovered.value} 条消息</div>}{!compact && visible.length > 1 && <div className="activity-axis"><span>{visible[0].date.slice(5)}</span><span>{visible.at(-1)!.date.slice(5)}</span></div>}</div>;
 }
 
 function trendLabel(messages: ChatMessage[]) {
@@ -41,6 +42,7 @@ function trendLabel(messages: ChatMessage[]) {
 export default function MemoryLab() {
   const [personas, setPersonas] = useState<PersonaSummary[]>([]);
   const [runs, setRuns] = useState<RunRecord[]>([]);
+  const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
   const [runData, setRunData] = useState<RunData | null>(null);
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
@@ -49,15 +51,22 @@ export default function MemoryLab() {
   const [detailTab, setDetailTab] = useState<'memory' | 'intent' | 'compare'>('memory');
   const [configOpen, setConfigOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [promptOpen, setPromptOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState('');
   const [running, setRunning] = useState<{ done: number; total: number; failed: number } | null>(null);
-  const [config, setConfig] = useState({ name: `模型对话实验`, provider: 'deepseek', model: 'deepseek-chat', baseUrl: '', apiKey: '', historicalDays: 28, densityScale: 40, userCount: 32, concurrency: 2 });
+  const [config, setConfig] = useState({ name: `模型对话实验`, provider: 'deepseek', model: 'deepseek-chat', baseUrl: '', apiKey: '', historicalDays: 28, densityScale: 50, userCount: 32, concurrency: 2, promptTemplateId: '', promptName: '', userPrompt: '', agentPrompt: '' });
+  const [promptDraft, setPromptDraft] = useState({ id: '', name: '', userPrompt: '', agentPrompt: '' });
 
   async function bootstrap(preferredRunId?: string) {
     const response = await fetch('/api/simulator'); const data = await response.json() as any;
     if (!response.ok) throw new Error(data.error || '加载失败');
-    setPersonas(data.personas); setRuns(data.runs);
+    setPersonas(data.personas); setRuns(data.runs); setPromptTemplates(data.promptTemplates || []);
+    if (!config.promptTemplateId && data.promptTemplates?.[0]) {
+      const prompt = data.promptTemplates[0] as PromptTemplate;
+      setConfig((current) => ({ ...current, promptTemplateId: prompt.id, promptName: prompt.name, userPrompt: prompt.userPrompt, agentPrompt: prompt.agentPrompt }));
+      setPromptDraft({ id: prompt.id, name: prompt.name, userPrompt: prompt.userPrompt, agentPrompt: prompt.agentPrompt });
+    }
     const target = preferredRunId || data.runs?.[0]?.id;
     if (target) await loadRun(target);
   }
@@ -130,18 +139,51 @@ export default function MemoryLab() {
     await bootstrap(runData?.run.id); setToast('实验名称已更新');
   }
 
+  function selectPrompt(id: string) {
+    const prompt = promptTemplates.find((item) => item.id === id);
+    if (!prompt) return;
+    setConfig((current) => ({ ...current, promptTemplateId: prompt.id, promptName: prompt.name, userPrompt: prompt.userPrompt, agentPrompt: prompt.agentPrompt }));
+    setPromptDraft({ id: prompt.id, name: prompt.name, userPrompt: prompt.userPrompt, agentPrompt: prompt.agentPrompt });
+  }
+
+  function editCurrentPrompt() {
+    const runPrompt = runData?.run;
+    if (runPrompt?.userPrompt && runPrompt?.agentPrompt) {
+      setPromptDraft({ id: runPrompt.promptTemplateId || '', name: runPrompt.promptName || `${runPrompt.name} Prompt`, userPrompt: runPrompt.userPrompt, agentPrompt: runPrompt.agentPrompt });
+      setPromptOpen(true); return;
+    }
+    const prompt = promptTemplates.find((item) => item.id === runPrompt?.promptTemplateId) || promptTemplates.find((item) => item.id === config.promptTemplateId) || promptTemplates[0];
+    if (prompt) setPromptDraft({ id: prompt.id, name: prompt.name, userPrompt: prompt.userPrompt, agentPrompt: prompt.agentPrompt });
+    setPromptOpen(true);
+  }
+
+  async function savePrompt(asNew: boolean) {
+    const response = await fetch('/api/simulator', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'save_prompt', ...promptDraft, id: asNew ? undefined : promptDraft.id }) });
+    const result = await response.json() as { prompt?: PromptTemplate; error?: string };
+    if (!response.ok || !result.prompt) { setToast(result.error || '保存 Prompt 失败'); return; }
+    const prompt = result.prompt;
+    if (runData?.run.id && runData.run.id !== 'campus-32-baseline-v1') {
+      await fetch('/api/simulator', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'update_run_prompt', runId: runData.run.id, promptTemplateId: prompt.id, promptName: prompt.name, userPrompt: prompt.userPrompt, agentPrompt: prompt.agentPrompt }) });
+    }
+    setPromptTemplates((items) => [prompt, ...items.filter((item) => item.id !== prompt.id)]);
+    setPromptDraft({ id: prompt.id, name: prompt.name, userPrompt: prompt.userPrompt, agentPrompt: prompt.agentPrompt });
+    setConfig((current) => ({ ...current, promptTemplateId: prompt.id, promptName: prompt.name, userPrompt: prompt.userPrompt, agentPrompt: prompt.agentPrompt }));
+    setRunData((current) => current && current.run.promptTemplateId === prompt.id ? { ...current, run: { ...current.run, promptName: prompt.name, userPrompt: prompt.userPrompt, agentPrompt: prompt.agentPrompt } } : current);
+    setToast(asNew ? '已保存为新的共享 Prompt' : 'Prompt 已更新，后续实验可直接调用');
+  }
+
   const messageCount = runData?.messages.length ?? 0; const memoryCount = runData?.memories.length ?? 0;
   const dailyMemoryCount = new Set((runData?.memories ?? []).map((item) => `${item.personaId}/${item.dayKey}`)).size;
 
   return <main className="app-root">
     <header className="topbar">
       <button className="brand" onClick={() => setSelectedPersonaId(null)}><span className="brand-mark">M</span><span><strong>Memory Simulator</strong><small>用户记忆结构化实验室</small></span></button>
-      <div className="header-actions"><button className="button ghost" onClick={() => setHistoryOpen(true)}>实验版本</button><button className="button secondary" disabled={!runData} onClick={() => exportMemory()}>↓ 全部 Memory</button><button className="button primary" onClick={() => setConfigOpen(true)}>＋ 模型对比实验</button></div>
+      <div className="header-actions"><button className="button ghost" onClick={() => setHistoryOpen(true)}>实验版本</button><button className="button ghost" onClick={editCurrentPrompt}>Prompt 库</button><button className="button secondary" disabled={!runData} onClick={() => exportMemory()}>↓ 全部 Memory</button><button className="button primary" onClick={() => setConfigOpen(true)}>＋ 模型对比实验</button></div>
     </header>
 
     <div className="shell">
       <section className="hero"><div><p className="eyebrow">VOUCH NATURAL MEMORY · 32 USERS</p><h1>从连续聊天，沉淀可验证的 Memory</h1><p>当前默认展示优化后的 Vouch 自然对话基线。用户先聊具体的人和事，系统再按天总结并写入对应 Memory 框架；也可以创建模型实验进行版本对比。</p></div><div className="hero-actions"><button className="button primary" onClick={() => setConfigOpen(true)}>创建模型实验</button><button className="button secondary" disabled={!runData} onClick={() => exportRaw()}>↓ 全部原始对话</button></div></section>
-      {runData && <div className="run-strip"><span className={`status ${runData.run.status}`}>{statusText[runData.run.status] || runData.run.status}</span><strong>{runData.run.name}</strong><small>{runData.run.provider} · {runData.run.model} · 密度 {runData.run.densityScale}%</small><span>{runData.run.completedCount}/{runData.run.selectedCount} 人完成</span>{runData.run.failedCount > 0 && <button onClick={() => setHistoryOpen(true)}>{runData.run.failedCount} 个失败原因 →</button>}</div>}
+      {runData && <div className="run-strip"><span className={`status ${runData.run.status}`}>{statusText[runData.run.status] || runData.run.status}</span><strong>{runData.run.name}</strong><small>{runData.run.provider} · {runData.run.model} · {runData.run.promptName || '默认 Prompt'} · 密度 {runData.run.densityScale}%</small><button onClick={editCurrentPrompt}>编辑 Prompt</button><span>{runData.run.completedCount}/{runData.run.selectedCount} 人完成</span>{runData.run.failedCount > 0 && <button onClick={() => setHistoryOpen(true)}>{runData.run.failedCount} 个失败原因 →</button>}</div>}
       <section className="metrics"><article><span>用户宇宙</span><strong>32</strong><small>20 自然用户 · 12 难例</small></article><article><span>已沉淀消息</span><strong>{messageCount.toLocaleString()}</strong><small>{runData ? '历史还原 + 未来模拟' : '运行实验后生成'}</small></article><article><span>每日 Memory</span><strong>{dailyMemoryCount.toLocaleString()}</strong><small>{memoryCount} 条结构化更新，均保留来源</small></article><article><span>时间窗</span><strong>{runData ? `${runData.run.historicalDays + 14} 天` : '42 天'}</strong><small>{runData ? `历史 ${runData.run.historicalDays} 天 · 未来 14 天` : '历史 28 天 · 未来 14 天'}</small></article></section>
 
       <section className="workspace">
@@ -157,7 +199,9 @@ export default function MemoryLab() {
       <aside className="memory-panel"><div className="profile-card"><div><span>用户简介</span><b>{activePersona.age} 岁 · {activePersona.city}</b></div><p>{activePersona.education}</p><div className="tag-row">{activePersona.interests.map((item) => <span key={item}>{item}</span>)}</div>{activePersona.hardCase && <p className="hard-note">测试点：{activePersona.hardCase}</p>}</div><div className="tabbar"><button className={detailTab === 'memory' ? 'active' : ''} onClick={() => setDetailTab('memory')}>每日 Memory</button><button className={detailTab === 'intent' ? 'active' : ''} onClick={() => setDetailTab('intent')}>Social Intent</button><button className={detailTab === 'compare' ? 'active' : ''} onClick={() => setDetailTab('compare')}>Memory 对照</button></div><div className="memory-scroll">{detailTab === 'compare' ? <MemoryComparison source={detailData?.personaSource} fragments={detailMemories} messages={detailMessages} /> : <MemoryList fragments={detailTab === 'intent' ? detailMemories.filter((m) => m.socialIntent || m.domain === 'social_intent') : detailMemories} messages={detailMessages} onShowCurrent={(id) => { setDetailTab('compare'); setTimeout(() => document.getElementById(`current-memory-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50); }} />}
       </div></aside></div></section></div>}
 
-    {configOpen && <div className="modal-backdrop"><section className="modal"><header><div><p className="eyebrow">MODEL EXPERIMENT</p><h2>创建模型对话实验</h2></div><button onClick={() => setConfigOpen(false)}>×</button></header><div className="setup-note"><strong>与 Vouch 自然对话基线对比</strong><p>使用同一批用户和同一套 Memory 规则调用其他模型。API Key 只随当前请求发送，不保存；完成后可在“实验版本”中切换查看。</p></div><div className="form-grid"><label className="full">实验名称<input value={config.name} onChange={(e) => setConfig({ ...config, name: e.target.value })} /></label><label>API 提供商<select value={config.provider} onChange={(e) => setConfig({ ...config, provider: e.target.value, model: providerModels[e.target.value] })}>{Object.keys(providerModels).map((p) => <option key={p} value={p}>{p === 'qwen' ? '通义千问 Qwen' : p === 'moonshot' ? 'Moonshot / Kimi' : p === 'siliconflow' ? 'SiliconFlow' : p[0].toUpperCase()+p.slice(1)}</option>)}</select></label><label>模型<input value={config.model} onChange={(e) => setConfig({ ...config, model: e.target.value })} /></label><label className="full">API Key<input type="password" value={config.apiKey} onChange={(e) => setConfig({ ...config, apiKey: e.target.value })} placeholder="只存在当前浏览器内存，不保存、不共享" /><small>也可在服务端配置 {providerEnv(config.provider)} 或通用 LLM_API_KEY。</small></label><label className="full">自定义 OpenAI-compatible 地址（可选）<input value={config.baseUrl} onChange={(e) => setConfig({ ...config, baseUrl: e.target.value })} placeholder="留空使用对应提供商官方地址" /></label><label>用户人数 <b>{config.userCount}</b><input type="range" min="1" max="32" value={config.userCount} onChange={(e) => setConfig({ ...config, userCount: Number(e.target.value) })} /></label><label>并发数<select value={config.concurrency} onChange={(e) => setConfig({ ...config, concurrency: Number(e.target.value) })}><option value="1">1（最稳）</option><option value="2">2（推荐）</option><option value="3">3</option></select></label><label>历史回溯天数<input type="number" min="7" max="90" value={config.historicalDays} onChange={(e) => setConfig({ ...config, historicalDays: Number(e.target.value) })} /></label><label>未来模拟<strong className="locked">固定 14 天</strong></label><label className="full">对话密度 <b>{config.densityScale}%</b><input type="range" min="10" max="100" step="10" value={config.densityScale} onChange={(e) => setConfig({ ...config, densityScale: Number(e.target.value) })} /></label></div><footer><span>预计约 {config.userCount * 2} 次模型调用</span><button className="button secondary" onClick={() => setConfigOpen(false)}>取消</button><button className="button primary" onClick={startRun}>创建并运行</button></footer></section></div>}
+    {configOpen && <div className="modal-backdrop"><section className="modal"><header><div><p className="eyebrow">MODEL EXPERIMENT</p><h2>创建模型对话实验</h2></div><button onClick={() => setConfigOpen(false)}>×</button></header><div className="setup-note"><strong>与 Vouch 自然对话基线对比</strong><p>API Key 只随当前请求发送，不保存。实验会保存所选 Prompt 的快照，之后修改 Prompt 库不会改变已经发生的实验。</p></div><div className="form-grid"><label className="full">实验名称<input value={config.name} onChange={(e) => setConfig({ ...config, name: e.target.value })} /></label><label className="full prompt-picker">人设 Prompt<select value={config.promptTemplateId} onChange={(e) => selectPrompt(e.target.value)}>{promptTemplates.map((prompt) => <option key={prompt.id} value={prompt.id}>{prompt.name}</option>)}</select><button type="button" onClick={() => { setConfigOpen(false); editCurrentPrompt(); }}>编辑 / 新建 Prompt</button></label><label>API 提供商<select value={config.provider} onChange={(e) => setConfig({ ...config, provider: e.target.value, model: providerModels[e.target.value] })}>{Object.keys(providerModels).map((p) => <option key={p} value={p}>{p === 'qwen' ? '通义千问 Qwen' : p === 'moonshot' ? 'Moonshot / Kimi' : p === 'siliconflow' ? 'SiliconFlow' : p[0].toUpperCase()+p.slice(1)}</option>)}</select></label><label>模型<input value={config.model} onChange={(e) => setConfig({ ...config, model: e.target.value })} /></label><label className="full">API Key<input type="password" value={config.apiKey} onChange={(e) => setConfig({ ...config, apiKey: e.target.value })} placeholder="只存在当前浏览器内存，不保存、不共享" /><small>也可在服务端配置 {providerEnv(config.provider)} 或通用 LLM_API_KEY。</small></label><label className="full">自定义 OpenAI-compatible 地址（可选）<input value={config.baseUrl} onChange={(e) => setConfig({ ...config, baseUrl: e.target.value })} placeholder="留空使用对应提供商官方地址" /></label><label>用户人数 <b>{config.userCount}</b><input type="range" min="1" max="32" value={config.userCount} onChange={(e) => setConfig({ ...config, userCount: Number(e.target.value) })} /></label><label>并发数<select value={config.concurrency} onChange={(e) => setConfig({ ...config, concurrency: Number(e.target.value) })}><option value="1">1（最稳）</option><option value="2">2（推荐）</option><option value="3">3</option></select></label><label>历史回溯天数<input type="number" min="7" max="90" value={config.historicalDays} onChange={(e) => setConfig({ ...config, historicalDays: Number(e.target.value) })} /></label><label>未来模拟<strong className="locked">固定 14 天</strong></label><label className="full">对话密度 <b>{config.densityScale}%</b><input type="range" min="10" max="100" step="10" value={config.densityScale} onChange={(e) => setConfig({ ...config, densityScale: Number(e.target.value) })} /></label></div><footer><span>A 类约每人 6 次分周调用，避免长输出截断</span><button className="button secondary" onClick={() => setConfigOpen(false)}>取消</button><button className="button primary" onClick={startRun}>创建并运行</button></footer></section></div>}
+
+    {promptOpen && <div className="modal-backdrop"><section className="modal prompt-modal"><header><div><p className="eyebrow">SHARED PROMPT LIBRARY</p><h2>用户 / Agent 人设 Prompt 库</h2></div><button onClick={() => setPromptOpen(false)}>×</button></header><div className="setup-note"><strong>所有访问者共享</strong><p>保存后，其他人也可以在新实验里直接调用。更新同名 Prompt 只影响之后创建的实验，旧实验保留当时的 Prompt 快照。</p></div><div className="prompt-editor"><aside>{promptTemplates.map((prompt) => <button key={prompt.id} className={promptDraft.id === prompt.id ? 'active' : ''} onClick={() => setPromptDraft({ id: prompt.id, name: prompt.name, userPrompt: prompt.userPrompt, agentPrompt: prompt.agentPrompt })}><strong>{prompt.name}</strong><small>{prompt.builtin ? '当前基线' : `更新于 ${fmtDate(prompt.updatedAt, true)}`}</small></button>)}<button className="new-prompt" onClick={() => setPromptDraft({ id: '', name: '新的 Prompt', userPrompt: promptDraft.userPrompt, agentPrompt: promptDraft.agentPrompt })}>＋ 基于当前新建</button></aside><div className="prompt-fields"><label>Prompt 名称<input value={promptDraft.name} onChange={(e) => setPromptDraft({ ...promptDraft, name: e.target.value })} /></label><label>用户人设 Prompt<textarea value={promptDraft.userPrompt} onChange={(e) => setPromptDraft({ ...promptDraft, userPrompt: e.target.value })} /><small>支持 {'{{USER_PROFILE}}'}、{'{{CURRENT_LIFE_STATE}}'}、{'{{SCENE}}'}、{'{{ACTIVITY_BASELINE}}'} 占位符。</small></label><label>Agent 人设 Prompt<textarea value={promptDraft.agentPrompt} onChange={(e) => setPromptDraft({ ...promptDraft, agentPrompt: e.target.value })} /></label></div></div><footer><span>当前编辑内容不会自动改写已生成的聊天</span><button className="button secondary" onClick={() => savePrompt(true)}>另存为新 Prompt</button><button className="button primary" onClick={() => savePrompt(false)}>{promptDraft.id ? '保存修改' : '保存到库'}</button></footer></section></div>}
 
     {historyOpen && <div className="modal-backdrop"><section className="modal history-modal"><header><div><p className="eyebrow">EXPERIMENT VERSIONS</p><h2>切换实验版本</h2></div><button onClick={() => setHistoryOpen(false)}>×</button></header><div className="run-list">{runs.map((run) => <div key={run.id} className={`run-item ${runData?.run.id === run.id ? 'selected' : ''}`}><button className="run-select" onClick={async () => { await loadRun(run.id); setHistoryOpen(false); }}><span className={`status ${run.status}`}>{statusText[run.status] || run.status}</span><span><strong>{run.name}</strong><small>{fmtDate(run.createdAt, true)} · {run.provider}/{run.model} · {run.densityScale}%</small>{run.errorSummary && <em>{run.errorSummary}</em>}</span><b>{run.completedCount}/{run.selectedCount}</b></button>{run.id !== 'campus-32-baseline-v1' && <button className="rename-run" onClick={() => renameExperiment(run)}>改名</button>}</div>)}</div></section></div>}
     {running && <div className="running-panel"><div><span className="spinner" /><strong>正在运行模型实验</strong><small>{running.done}/{running.total} 位用户完成{running.failed ? ` · ${running.failed} 位失败` : ''}</small></div><div className="progress"><i style={{ width: `${running.done / running.total * 100}%` }} /></div><p>请保持本页打开。结果完成后会保存到实验版本中。</p></div>}

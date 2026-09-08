@@ -15,6 +15,13 @@
       "when": 1788861305871,
       "tag": "0001_hot_lady_bullseye",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788865117132,
+      "tag": "0002_vengeful_spyke",
+      "breakpoints": true
     }
   ]
 }

@@ -76,4 +76,18 @@ export type RunRecord = {
   completedCount: number;
   failedCount: number;
   errorSummary: string | null;
+  promptTemplateId?: string;
+  promptName?: string;
+  userPrompt?: string;
+  agentPrompt?: string;
+};
+
+export type PromptTemplate = {
+  id: string;
+  name: string;
+  userPrompt: string;
+  agentPrompt: string;
+  createdAt: string;
+  updatedAt: string;
+  builtin?: boolean;
 };

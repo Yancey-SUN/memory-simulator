@@ -1,5 +1,6 @@
 import { env } from 'cloudflare:workers';
-import type { ChatMessage, MemoryFragment, RunRecord } from './types';
+import type { ChatMessage, MemoryFragment, PromptTemplate, RunRecord } from './types';
+import { DEFAULT_PROMPT_TEMPLATE } from './prompts';
 
 let schemaReady = false;
 
@@ -20,17 +21,25 @@ export async function ensureSchema() {
     db().prepare(`CREATE INDEX IF NOT EXISTS memory_day_idx ON memory_fragments(day_key)`),
     db().prepare(`CREATE TABLE IF NOT EXISTS simulation_failures (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, persona_id TEXT NOT NULL, phase TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL)`),
     db().prepare(`CREATE INDEX IF NOT EXISTS failures_run_idx ON simulation_failures(run_id)`),
+    db().prepare(`CREATE TABLE IF NOT EXISTS prompt_templates (id TEXT PRIMARY KEY, name TEXT NOT NULL, user_prompt TEXT NOT NULL, agent_prompt TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
+    db().prepare(`CREATE INDEX IF NOT EXISTS prompt_templates_updated_idx ON prompt_templates(updated_at)`),
   ]);
   const columns = await db().prepare(`PRAGMA table_info(memory_fragments)`).all();
   const columnNames = new Set((columns.results as Array<{ name: string }>).map((column) => column.name));
   if (!columnNames.has('framework_path')) await db().prepare(`ALTER TABLE memory_fragments ADD COLUMN framework_path TEXT`).run();
   if (!columnNames.has('daily_summary')) await db().prepare(`ALTER TABLE memory_fragments ADD COLUMN daily_summary TEXT`).run();
+  const runColumns = await db().prepare(`PRAGMA table_info(simulation_runs)`).all();
+  const runColumnNames = new Set((runColumns.results as Array<{ name: string }>).map((column) => column.name));
+  if (!runColumnNames.has('prompt_template_id')) await db().prepare(`ALTER TABLE simulation_runs ADD COLUMN prompt_template_id TEXT`).run();
+  if (!runColumnNames.has('prompt_name')) await db().prepare(`ALTER TABLE simulation_runs ADD COLUMN prompt_name TEXT`).run();
+  if (!runColumnNames.has('user_prompt')) await db().prepare(`ALTER TABLE simulation_runs ADD COLUMN user_prompt TEXT`).run();
+  if (!runColumnNames.has('agent_prompt')) await db().prepare(`ALTER TABLE simulation_runs ADD COLUMN agent_prompt TEXT`).run();
   schemaReady = true;
 }
 
 function mapRun(row: Record<string, unknown>): RunRecord {
   return {
-    id: String(row.id), name: String(row.name), status: String(row.status), createdAt: String(row.created_at), completedAt: row.completed_at ? String(row.completed_at) : null, provider: String(row.provider), model: String(row.model), historicalDays: Number(row.historical_days), futureDays: Number(row.future_days), densityScale: Number(row.density_scale), selectedCount: Number(row.selected_count), completedCount: Number(row.completed_count), failedCount: Number(row.failed_count), errorSummary: row.error_summary ? String(row.error_summary) : null,
+    id: String(row.id), name: String(row.name), status: String(row.status), createdAt: String(row.created_at), completedAt: row.completed_at ? String(row.completed_at) : null, provider: String(row.provider), model: String(row.model), historicalDays: Number(row.historical_days), futureDays: Number(row.future_days), densityScale: Number(row.density_scale), selectedCount: Number(row.selected_count), completedCount: Number(row.completed_count), failedCount: Number(row.failed_count), errorSummary: row.error_summary ? String(row.error_summary) : null, promptTemplateId: row.prompt_template_id ? String(row.prompt_template_id) : undefined, promptName: row.prompt_name ? String(row.prompt_name) : undefined, userPrompt: row.user_prompt ? String(row.user_prompt) : undefined, agentPrompt: row.agent_prompt ? String(row.agent_prompt) : undefined,
   };
 }
 
@@ -40,18 +49,46 @@ export async function listRuns() {
   return (result.results as Record<string, unknown>[]).map(mapRun);
 }
 
-export async function createRun(input: { name: string; provider: string; model: string; historicalDays: number; futureDays: number; densityScale: number; selectedIds: string[] }) {
+export async function createRun(input: { name: string; provider: string; model: string; historicalDays: number; futureDays: number; densityScale: number; selectedIds: string[]; promptTemplateId?: string; promptName?: string; userPrompt?: string; agentPrompt?: string }) {
   await ensureSchema();
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
-  await db().prepare(`INSERT INTO simulation_runs (id,name,status,created_at,provider,model,historical_days,future_days,density_scale,selected_count,completed_count,failed_count,selected_ids_json) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,?)`)
-    .bind(id, input.name, 'running', createdAt, input.provider, input.model, input.historicalDays, input.futureDays, input.densityScale, input.selectedIds.length, JSON.stringify(input.selectedIds)).run();
-  return { id, name: input.name, status: 'running', createdAt, completedAt: null, provider: input.provider, model: input.model, historicalDays: input.historicalDays, futureDays: input.futureDays, densityScale: input.densityScale, selectedCount: input.selectedIds.length, completedCount: 0, failedCount: 0, errorSummary: null } satisfies RunRecord;
+  await db().prepare(`INSERT INTO simulation_runs (id,name,status,created_at,provider,model,historical_days,future_days,density_scale,selected_count,completed_count,failed_count,selected_ids_json,prompt_template_id,prompt_name,user_prompt,agent_prompt) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,?,?,?,?,?)`)
+    .bind(id, input.name, 'running', createdAt, input.provider, input.model, input.historicalDays, input.futureDays, input.densityScale, input.selectedIds.length, JSON.stringify(input.selectedIds), input.promptTemplateId ?? null, input.promptName ?? null, input.userPrompt ?? null, input.agentPrompt ?? null).run();
+  return { id, name: input.name, status: 'running', createdAt, completedAt: null, provider: input.provider, model: input.model, historicalDays: input.historicalDays, futureDays: input.futureDays, densityScale: input.densityScale, selectedCount: input.selectedIds.length, completedCount: 0, failedCount: 0, errorSummary: null, promptTemplateId: input.promptTemplateId, promptName: input.promptName, userPrompt: input.userPrompt, agentPrompt: input.agentPrompt } satisfies RunRecord;
+}
+
+function mapPrompt(row: Record<string, unknown>): PromptTemplate {
+  return { id: String(row.id), name: String(row.name), userPrompt: String(row.user_prompt), agentPrompt: String(row.agent_prompt), createdAt: String(row.created_at), updatedAt: String(row.updated_at) };
+}
+
+export async function listPromptTemplates() {
+  await ensureSchema();
+  const result = await db().prepare(`SELECT * FROM prompt_templates ORDER BY updated_at DESC`).all();
+  const stored = (result.results as Record<string, unknown>[]).map(mapPrompt);
+  const override = stored.find((item) => item.id === DEFAULT_PROMPT_TEMPLATE.id);
+  return [override ? { ...override, builtin: true } : DEFAULT_PROMPT_TEMPLATE, ...stored.filter((item) => item.id !== DEFAULT_PROMPT_TEMPLATE.id)];
+}
+
+export async function savePromptTemplate(input: { id?: string; name: string; userPrompt: string; agentPrompt: string }) {
+  await ensureSchema();
+  const id = input.id || crypto.randomUUID();
+  const now = new Date().toISOString();
+  const existing = await db().prepare(`SELECT created_at FROM prompt_templates WHERE id=?`).bind(id).first<Record<string, unknown>>();
+  await db().prepare(`INSERT INTO prompt_templates (id,name,user_prompt,agent_prompt,created_at,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,user_prompt=excluded.user_prompt,agent_prompt=excluded.agent_prompt,updated_at=excluded.updated_at`)
+    .bind(id, input.name.slice(0, 80), input.userPrompt.slice(0, 24000), input.agentPrompt.slice(0, 24000), existing?.created_at ? String(existing.created_at) : now, now).run();
+  return { id, name: input.name.slice(0, 80), userPrompt: input.userPrompt.slice(0, 24000), agentPrompt: input.agentPrompt.slice(0, 24000), createdAt: existing?.created_at ? String(existing.created_at) : now, updatedAt: now, builtin: id === DEFAULT_PROMPT_TEMPLATE.id } satisfies PromptTemplate;
 }
 
 export async function renameRun(runId: string, name: string) {
   await ensureSchema();
   await db().prepare(`UPDATE simulation_runs SET name=? WHERE id=?`).bind(name.slice(0, 80), runId).run();
+}
+
+export async function updateRunPrompt(runId: string, prompt: { id: string; name: string; userPrompt: string; agentPrompt: string }) {
+  await ensureSchema();
+  await db().prepare(`UPDATE simulation_runs SET prompt_template_id=?,prompt_name=?,user_prompt=?,agent_prompt=? WHERE id=?`)
+    .bind(prompt.id, prompt.name, prompt.userPrompt, prompt.agentPrompt, runId).run();
 }
 
 export async function savePersonaResult(runId: string, personaId: string, model: string, messages: ChatMessage[], memories: MemoryFragment[]) {
