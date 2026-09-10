@@ -1,10 +1,10 @@
 import { getPersonaSource, getPersonaSummaries } from './personas';
 import { GUARDIAN_AGENT_PROMPT, GUARDIAN_MVP_SPEC, GUARDIAN_PROMPT_TEMPLATE, GUARDIAN_USER_PROMPT } from './prompts';
 import type { ChatMessage, MemoryFragment, Phase, RunRecord, Speaker } from './types';
+import { guardianScenes } from './guardian-scenes';
 
 export const GUARDIAN_V2_RUN_ID = 'guardian-human-v2';
 const anchor = '2026-09-10';
-const selectedIds = ['U01', 'U02', 'U03', 'U04', 'U05', 'U06'];
 
 type MemoryDraft = { source: number; domain: string; kind: string; content: string; evidence?: string; privacy?: string; socialIntent?: boolean; path?: string };
 type SessionDraft = { offset: number; phase: Phase; messages: Array<[Speaker, string]>; memories: MemoryDraft[] };
@@ -184,13 +184,31 @@ function framework(domain: string) {
 }
 
 export function buildGuardianV2Run(personaFilter?: string) {
-  const profiles = getPersonaSummaries().filter((profile) => selectedIds.includes(profile.id));
+  const profiles = getPersonaSummaries();
   const activeProfiles = personaFilter ? profiles.filter((profile) => profile.id === personaFilter) : profiles;
   const messages: ChatMessage[] = [];
   const memories: MemoryFragment[] = [];
   let sequence = 0;
   for (const profile of activeProfiles) {
-    for (const [sessionIndex, session] of (sessions[profile.id] || []).entries()) {
+    const profileSessions = sessions[profile.id] || (['historical', 'future'] as Phase[]).map((phase, phaseIndex) => {
+      const source = guardianScenes[profile.id]?.[phase];
+      const messages = (source?.messages || []) as Array<[Speaker, string]>;
+      const fallbackSource = (index: number) => {
+        if (messages[index]?.[0] === 'user') return index;
+        for (let cursor = Math.min(index, messages.length - 1); cursor >= 0; cursor -= 1) if (messages[cursor]?.[0] === 'user') return cursor;
+        return 0;
+      };
+      return {
+        offset: phase === 'historical' ? -24 + (Number(profile.id.slice(1)) % 17) : 1 + (Number(profile.id.slice(1)) % 13),
+        phase,
+        messages,
+        memories: (source?.memories || []).map((memory) => ({
+          source: fallbackSource(memory.source), domain: memory.domain, kind: memory.kind || 'fact', content: memory.content,
+          privacy: memory.privacy, socialIntent: memory.socialIntent, path: framework(memory.domain),
+        })),
+      } satisfies SessionDraft;
+    });
+    for (const [sessionIndex, session] of profileSessions.entries()) {
       const day = dateAt(session.offset);
       const sessionId = `${GUARDIAN_V2_RUN_ID}-${profile.id}-${sessionIndex + 1}`;
       const base = new Date(`${day}T${String(12 + (sessionIndex * 3 + Number(profile.id.slice(1))) % 10).padStart(2, '0')}:${String(7 + sessionIndex * 9).padStart(2, '0')}:00+08:00`).getTime();
@@ -217,7 +235,7 @@ export function buildGuardianV2Run(personaFilter?: string) {
     selectedCount: activeProfiles.length, completedCount: activeProfiles.length, failedCount: 0, errorSummary: null,
     promptTemplateId: GUARDIAN_PROMPT_TEMPLATE.id, promptName: '伴生精灵人感优化 v2 · Turn-by-turn', userPrompt: GUARDIAN_USER_PROMPT,
     agentPrompt: GUARDIAN_AGENT_PROMPT, guardianSpec: GUARDIAN_MVP_SPEC,
-    notes: '6位用户系统实验。用户与守护者按角色逐轮生成；守护者只使用已披露对话与已确认 Memory，Memory 在会话后独立抽取。'
+    notes: `32位用户系统实验。前6位为深度逐轮样本，其余26位完成独立历史/未来会话；守护者只使用已披露对话与已确认 Memory，Memory 在会话后独立抽取。`
   };
   return { run, selectedIds: activeProfiles.map((profile) => profile.id), messages, memories, failures: [], tasks: [], personaSource: personaFilter ? getPersonaSource(personaFilter) : undefined };
 }
