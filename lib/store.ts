@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:workers';
-import type { ChatMessage, MemoryFragment, PromptTemplate, RunRecord } from './types';
+import type { ChatMessage, MemoryFragment, PromptTemplate, RunRecord, SimulationTask } from './types';
 import { DEFAULT_PROMPT_TEMPLATE, GUARDIAN_PROMPT_TEMPLATE } from './prompts';
 
 let schemaReady = false;
@@ -21,6 +21,8 @@ export async function ensureSchema() {
     db().prepare(`CREATE INDEX IF NOT EXISTS memory_day_idx ON memory_fragments(day_key)`),
     db().prepare(`CREATE TABLE IF NOT EXISTS simulation_failures (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, persona_id TEXT NOT NULL, phase TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL)`),
     db().prepare(`CREATE INDEX IF NOT EXISTS failures_run_idx ON simulation_failures(run_id)`),
+    db().prepare(`CREATE TABLE IF NOT EXISTS simulation_tasks (run_id TEXT NOT NULL, persona_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', next_session INTEGER NOT NULL DEFAULT 0, total_sessions INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(run_id,persona_id))`),
+    db().prepare(`CREATE INDEX IF NOT EXISTS tasks_run_status_idx ON simulation_tasks(run_id,status)`),
     db().prepare(`CREATE TABLE IF NOT EXISTS prompt_templates (id TEXT PRIMARY KEY, name TEXT NOT NULL, user_prompt TEXT NOT NULL, agent_prompt TEXT NOT NULL, guardian_spec TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`),
     db().prepare(`CREATE INDEX IF NOT EXISTS prompt_templates_updated_idx ON prompt_templates(updated_at)`),
   ]);
@@ -101,8 +103,79 @@ export async function deleteRun(runId: string) {
     db().prepare(`DELETE FROM chat_messages WHERE run_id=?`).bind(runId),
     db().prepare(`DELETE FROM memory_fragments WHERE run_id=?`).bind(runId),
     db().prepare(`DELETE FROM simulation_failures WHERE run_id=?`).bind(runId),
+    db().prepare(`DELETE FROM simulation_tasks WHERE run_id=?`).bind(runId),
     db().prepare(`DELETE FROM simulation_runs WHERE id=?`).bind(runId),
   ]);
+}
+
+function mapTask(row: Record<string, unknown>): SimulationTask {
+  return {
+    runId: String(row.run_id), personaId: String(row.persona_id), status: String(row.status) as SimulationTask['status'],
+    nextSession: Number(row.next_session), totalSessions: Number(row.total_sessions), attempts: Number(row.attempts),
+    lastError: row.last_error ? String(row.last_error) : null, updatedAt: String(row.updated_at),
+  };
+}
+
+export async function initializeRunTasks(runId: string, plans: Array<{ personaId: string; totalSessions: number }>) {
+  await ensureSchema();
+  const now = new Date().toISOString();
+  const statements = plans.map((plan) => db().prepare(`INSERT OR IGNORE INTO simulation_tasks (run_id,persona_id,status,next_session,total_sessions,attempts,updated_at) VALUES (?,?, 'pending',0,?,0,?)`).bind(runId, plan.personaId, plan.totalSessions, now));
+  for (let index = 0; index < statements.length; index += 75) await db().batch(statements.slice(index, index + 75));
+}
+
+export async function getSimulationTask(runId: string, personaId: string) {
+  await ensureSchema();
+  const row = await db().prepare(`SELECT * FROM simulation_tasks WHERE run_id=? AND persona_id=?`).bind(runId, personaId).first<Record<string, unknown>>();
+  return row ? mapTask(row) : null;
+}
+
+export async function appendSessionResult(input: { runId: string; personaId: string; model: string; messages: ChatMessage[]; memories: MemoryFragment[]; nextSession: number; totalSessions: number }) {
+  await ensureSchema();
+  const task = await getSimulationTask(input.runId, input.personaId);
+  if (!task) throw new Error('模拟任务不存在');
+  if (task.status === 'completed') return task;
+  const isComplete = input.nextSession >= input.totalSessions;
+  const statements = [
+    ...input.messages.map((m) => db().prepare(`INSERT OR IGNORE INTO chat_messages (id,run_id,persona_id,phase,session_id,timestamp,speaker,content,sequence,model) VALUES (?,?,?,?,?,?,?,?,?,?)`).bind(m.id, input.runId, input.personaId, m.phase, m.sessionId, m.timestamp, m.speaker, m.content, m.sequence, input.model)),
+    ...input.memories.map((m) => db().prepare(`INSERT OR IGNORE INTO memory_fragments (id,run_id,persona_id,day_key,phase,domain,kind,content,confidence,evidence_type,privacy,social_intent,source_message_ids_json,status,framework_path,daily_summary) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(m.id, input.runId, input.personaId, m.dayKey, m.phase, m.domain, m.kind, m.content, Math.round(m.confidence * 100), m.evidenceType, m.privacy, m.socialIntent ? 1 : 0, JSON.stringify(m.sourceMessageIds), m.status, m.frameworkPath ?? null, m.dailySummary ?? null)),
+    db().prepare(`UPDATE simulation_tasks SET status=?,next_session=?,attempts=0,last_error=NULL,updated_at=? WHERE run_id=? AND persona_id=?`).bind(isComplete ? 'completed' : 'pending', input.nextSession, new Date().toISOString(), input.runId, input.personaId),
+    db().prepare(`DELETE FROM simulation_failures WHERE run_id=? AND persona_id=?`).bind(input.runId, input.personaId),
+  ];
+  if (isComplete && task.status !== 'completed') statements.push(db().prepare(`UPDATE simulation_runs SET completed_count=completed_count+1 WHERE id=?`).bind(input.runId));
+  for (let index = 0; index < statements.length; index += 75) await db().batch(statements.slice(index, index + 75));
+  await refreshRunStatus(input.runId);
+  return getSimulationTask(input.runId, input.personaId);
+}
+
+export async function recordTaskError(runId: string, personaId: string, phase: string, message: string, permanent = false) {
+  await ensureSchema();
+  const task = await getSimulationTask(runId, personaId);
+  if (!task || task.status === 'completed' || task.status === 'failed') return task;
+  const attempts = task.attempts + 1;
+  const failed = permanent || attempts >= 3;
+  const statements = [
+    db().prepare(`UPDATE simulation_tasks SET status=?,attempts=?,last_error=?,updated_at=? WHERE run_id=? AND persona_id=?`).bind(failed ? 'failed' : 'pending', attempts, message.slice(0, 1200), new Date().toISOString(), runId, personaId),
+    db().prepare(`DELETE FROM simulation_failures WHERE run_id=? AND persona_id=?`).bind(runId, personaId),
+    db().prepare(`INSERT INTO simulation_failures (id,run_id,persona_id,phase,message,created_at) VALUES (?,?,?,?,?,?)`).bind(crypto.randomUUID(), runId, personaId, phase, message.slice(0, 1200), new Date().toISOString()),
+    db().prepare(`UPDATE simulation_runs SET error_summary=? WHERE id=?`).bind(`${personaId}: ${message.slice(0, 180)}`, runId),
+  ];
+  if (failed) statements.push(db().prepare(`UPDATE simulation_runs SET failed_count=failed_count+1 WHERE id=?`).bind(runId));
+  await db().batch(statements);
+  await refreshRunStatus(runId);
+  return getSimulationTask(runId, personaId);
+}
+
+export async function resetFailedTasks(runId: string) {
+  await ensureSchema();
+  const result = await db().prepare(`SELECT persona_id FROM simulation_tasks WHERE run_id=? AND status='failed'`).bind(runId).all();
+  const ids = (result.results as Array<{ persona_id: string }>).map((row) => row.persona_id);
+  if (!ids.length) return [];
+  await db().batch([
+    db().prepare(`UPDATE simulation_tasks SET status='pending',attempts=0,last_error=NULL,updated_at=? WHERE run_id=? AND status='failed'`).bind(new Date().toISOString(), runId),
+    db().prepare(`DELETE FROM simulation_failures WHERE run_id=?`).bind(runId),
+    db().prepare(`UPDATE simulation_runs SET status='running',completed_at=NULL,failed_count=MAX(0,failed_count-?),error_summary=NULL WHERE id=?`).bind(ids.length, runId),
+  ]);
+  return ids;
 }
 
 export async function updateRunPrompt(runId: string, prompt: { id: string; name: string; userPrompt: string; agentPrompt: string; guardianSpec?: string }) {
@@ -153,8 +226,9 @@ export async function getRunData(runId: string, personaId?: string) {
   const messageQuery = db().prepare(`SELECT * FROM chat_messages WHERE run_id=?${suffix} ORDER BY timestamp,sequence`).bind(...(personaId ? [runId, personaId] : [runId]));
   const memoryQuery = db().prepare(`SELECT * FROM memory_fragments WHERE run_id=?${suffix} ORDER BY day_key,id`).bind(...(personaId ? [runId, personaId] : [runId]));
   const failureQuery = db().prepare(`SELECT * FROM simulation_failures WHERE run_id=?${suffix} ORDER BY created_at`).bind(...(personaId ? [runId, personaId] : [runId]));
-  const [messageResult, memoryResult, failureResult] = await db().batch([messageQuery, memoryQuery, failureQuery]);
+  const taskQuery = db().prepare(`SELECT * FROM simulation_tasks WHERE run_id=?${suffix} ORDER BY persona_id`).bind(...(personaId ? [runId, personaId] : [runId]));
+  const [messageResult, memoryResult, failureResult, taskResult] = await db().batch([messageQuery, memoryQuery, failureQuery, taskQuery]);
   const messages = (messageResult.results as Record<string, unknown>[]).map((r) => ({ id: String(r.id), runId: String(r.run_id), personaId: String(r.persona_id), phase: String(r.phase), sessionId: String(r.session_id), timestamp: String(r.timestamp), speaker: String(r.speaker), content: String(r.content), sequence: Number(r.sequence) }));
   const memories = (memoryResult.results as Record<string, unknown>[]).map((r) => ({ id: String(r.id), runId: String(r.run_id), personaId: String(r.persona_id), dayKey: String(r.day_key), phase: String(r.phase), domain: String(r.domain), kind: String(r.kind), content: String(r.content), confidence: Number(r.confidence) / 100, evidenceType: String(r.evidence_type), privacy: String(r.privacy), socialIntent: Boolean(r.social_intent), sourceMessageIds: JSON.parse(String(r.source_message_ids_json || '[]')), status: String(r.status), frameworkPath: r.framework_path ? String(r.framework_path) : undefined, dailySummary: r.daily_summary ? String(r.daily_summary) : undefined }));
-  return { run: mapRun(runRow), selectedIds: JSON.parse(String(runRow.selected_ids_json || '[]')), messages, memories, failures: failureResult.results };
+  return { run: mapRun(runRow), selectedIds: JSON.parse(String(runRow.selected_ids_json || '[]')), messages, memories, failures: failureResult.results, tasks: (taskResult.results as Record<string, unknown>[]).map(mapTask) };
 }

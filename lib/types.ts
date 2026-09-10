@@ -92,6 +92,17 @@ export type RunRecord = {
   notes?: string;
 };
 
+export type SimulationTask = {
+  runId: string;
+  personaId: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  nextSession: number;
+  totalSessions: number;
+  attempts: number;
+  lastError: string | null;
+  updatedAt: string;
+};
+
 export type PromptTemplate = {
   id: string;
   name: string;

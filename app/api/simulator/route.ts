@@ -1,9 +1,10 @@
 import { env } from 'cloudflare:workers';
 import { NextRequest, NextResponse } from 'next/server';
 import { activityPlan, buildProfileForPrompt, getPersonaSource, getPersonaSummaries } from '@/lib/personas';
-import { buildConversationPrompt } from '@/lib/prompts';
-import { createRun, deleteRun, getRunData, listPromptTemplates, listRuns, saveFailure, savePersonaResult, savePromptTemplate, updateRunMetadata, updateRunPrompt } from '@/lib/store';
+import { buildGuardianTurnPrompt, buildMemoryExtractionPrompt, buildUserTurnPrompt } from '@/lib/prompts';
+import { appendSessionResult, createRun, deleteRun, getRunData, getSimulationTask, initializeRunTasks, listPromptTemplates, listRuns, recordTaskError, resetFailedTasks, savePromptTemplate, updateRunMetadata, updateRunPrompt } from '@/lib/store';
 import type { ChatMessage, MemoryFragment, Phase } from '@/lib/types';
+import { collectDialogueAnchors } from '@/lib/memory-dialogue-engine';
 import { BUILTIN_RUN_ID, buildBuiltinRun } from '@/lib/builtin-simulation';
 import { GUARDIAN_RUN_ID, buildGuardianOptimizedRun } from '@/lib/guardian-simulation';
 
@@ -26,8 +27,8 @@ function customProviderBaseUrl(raw: string) {
   return parsed.toString().replace(/\/$/, '');
 }
 
-function dateKey(offsetDays: number) {
-  const date = new Date();
+function dateKey(baseIso: string, offsetDays: number) {
+  const date = new Date(baseIso);
   date.setHours(12, 0, 0, 0);
   date.setDate(date.getDate() + offsetDays);
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
@@ -41,29 +42,35 @@ function parseJson(text: string) {
   return JSON.parse(cleaned.slice(first, last + 1));
 }
 
-async function callModel(provider: string, model: string, baseUrl: string, apiKey: string, prompt: string) {
+function apiError(status: number, detail: string) {
+  const error = new Error(`API ${status}: ${detail}`) as Error & { status?: number };
+  error.status = status;
+  return error;
+}
+
+async function callCompletion(args: { provider: string; model: string; baseUrl: string; apiKey: string; system: string; prompt: string; json?: boolean; maxTokens?: number }) {
   let lastError = '';
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      const tokenLimit = provider === 'openai' ? { max_completion_tokens: 8000 } : { max_tokens: 8000 };
-      const sampling = provider === 'openai' ? {} : { temperature: provider === 'deepseek' ? 1.15 : 0.95 };
-      const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      const tokenLimit = args.provider === 'openai' ? { max_completion_tokens: args.maxTokens || 500 } : { max_tokens: args.maxTokens || 500 };
+      const sampling = args.provider === 'openai' ? {} : { temperature: args.json ? 0.25 : 1.05 };
+      const response = await fetch(`${args.baseUrl.replace(/\/$/, '')}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ model, ...sampling, ...tokenLimit, messages: [{ role: 'system', content: '你是严谨的对话模拟与记忆证据生成器。只返回合法 JSON。' }, { role: 'user', content: prompt }] }),
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${args.apiKey}` },
+        body: JSON.stringify({ model: args.model, ...sampling, ...tokenLimit, ...(args.json ? { response_format: { type: 'json_object' } } : {}), messages: [{ role: 'system', content: args.system }, { role: 'user', content: args.prompt }] }),
       });
       const body = await response.text();
       if (!response.ok) {
         let detail = body.slice(0, 500);
         try { const parsed = JSON.parse(body); detail = parsed.error?.message ?? detail; } catch {}
         if ((response.status === 429 || response.status >= 500) && attempt < 2) { await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1))); lastError = detail; continue; }
-        throw new Error(`${provider} API ${response.status}: ${detail}`);
+        throw apiError(response.status, detail);
       }
       const result = JSON.parse(body);
       const content = result.choices?.[0]?.message?.content;
       if (!content) throw new Error('模型返回为空，可能触发了长度限制或内容过滤');
-      if (result.choices?.[0]?.finish_reason === 'length') throw new Error('模型回复因长度限制被截断，请降低对话密度后重试');
-      return parseJson(content);
+      if (result.choices?.[0]?.finish_reason === 'length') throw new Error('模型回复因长度限制被截断');
+      return String(content).trim();
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
       if (attempt < 2 && /fetch|network|timeout|429|5\d\d/i.test(lastError)) { await new Promise((resolve) => setTimeout(resolve, 700 * (attempt + 1))); continue; }
@@ -73,34 +80,9 @@ async function callModel(provider: string, model: string, baseUrl: string, apiKe
   throw new Error(lastError || '模型调用失败');
 }
 
-function normalizePhase(payload: any, phase: Phase, runId: string, personaId: string, sequenceStart: number) {
-  const messages: ChatMessage[] = [];
-  const memories: MemoryFragment[] = [];
-  const refMap = new Map<string, string>();
-  let sequence = sequenceStart;
-  for (const [sessionIndex, session] of (Array.isArray(payload?.sessions) ? payload.sessions : []).entries()) {
-    const sessionId = `${personaId}-${phase}-${sessionIndex + 1}`;
-    const baseDate = /^\d{4}-\d{2}-\d{2}$/.test(session.date) ? session.date : dateKey(phase === 'historical' ? -1 : 0);
-    const baseTime = /^\d{2}:\d{2}$/.test(session.start_time) ? session.start_time : '20:00';
-    const base = new Date(`${baseDate}T${baseTime}:00+08:00`).getTime();
-    for (const [index, item] of (Array.isArray(session.messages) ? session.messages : []).entries()) {
-      if (!item?.text || !['user', 'agent'].includes(item.speaker)) continue;
-      const id = crypto.randomUUID();
-      const timestamp = new Date(base + Math.max(0, Number(item.offset_minutes) || index) * 60_000).toISOString();
-      messages.push({ id, runId, personaId, phase, sessionId, timestamp, speaker: item.speaker, content: String(item.text).replace(/^（.*?）/, '').slice(0, 220), sequence: sequence++ });
-      if (item.ref) refMap.set(String(item.ref), id);
-    }
-  }
-  const legacyMemories = Array.isArray(payload?.memory_fragments) ? payload.memory_fragments : [];
-  const dailyMemories = (Array.isArray(payload?.daily_memories) ? payload.daily_memories : []).flatMap((day: any) => (Array.isArray(day?.updates) ? day.updates : []).map((update: any) => ({ ...update, date: day.date, daily_summary: day.summary })));
-  for (const item of [...legacyMemories, ...dailyMemories]) {
-    if (!item?.content) continue;
-    const sourceMessageIds = (Array.isArray(item.source_refs) ? item.source_refs : []).map((ref: unknown) => refMap.get(String(ref))).filter(Boolean) as string[];
-    if (!sourceMessageIds.length) continue;
-    const domain = String(item.domain || 'inner');
-    memories.push({ id: crypto.randomUUID(), runId, personaId, dayKey: /^\d{4}-\d{2}-\d{2}$/.test(item.date) ? item.date : messages.find((m) => sourceMessageIds.includes(m.id))?.timestamp.slice(0, 10) ?? dateKey(0), phase, domain, kind: String(item.kind || 'fact'), content: String(item.content).slice(0, 320), confidence: Math.max(0, Math.min(1, Number(item.confidence) || 0.5)), evidenceType: String(item.evidence_type || 'inferred'), privacy: String(item.privacy || 'normal'), socialIntent: Boolean(item.social_intent), sourceMessageIds, status: String(item.status || 'active'), frameworkPath: String(item.framework_path || frameworkPath(domain)), dailySummary: item.daily_summary ? String(item.daily_summary).slice(0, 500) : undefined });
-  }
-  return { messages, memories, nextSequence: sequence };
+function splitBubbles(text: string) {
+  const cleaned = text.replace(/^```(?:text)?\s*/i, '').replace(/\s*```$/, '').trim();
+  return cleaned.split(/\n+/).map((line) => line.replace(/^[-*•\d.、\s]+/, '').replace(/^(用户|守护者|Agent|小精灵)\s*[：:]/i, '').replace(/^（.*?）\s*/, '').trim()).filter(Boolean).slice(0, 4).map((line) => line.slice(0, 260));
 }
 
 function frameworkPath(domain: string) {
@@ -108,6 +90,74 @@ function frameworkPath(domain: string) {
   if (domain === 'permission') return '04_Privacy_and_Permission';
   if (domain === 'social_intent') return '05_Matching_Profile.Social_Intent';
   return `01_Self_Memory.${domain}`;
+}
+
+type SessionSlot = { phase: Phase; date: string; seedIndex: number };
+
+function distributedOffsets(days: number, count: number, startOffset: number) {
+  if (count <= 0) return [];
+  return Array.from({ length: count }, (_, index) => startOffset + Math.min(days - 1, Math.floor(((index + .5) * days) / count)));
+}
+
+function buildSchedule(activityClass: 'A' | 'B' | 'C' | 'D', historicalDays: number, futureDays: number, scale: number, createdAt: string): SessionSlot[] {
+  const weekly = { A: 7, B: 3.5, C: .9, D: .35 }[activityClass];
+  const factor = Math.max(.2, scale / 50);
+  const count = (days: number, phase: Phase) => {
+    const raw = (days / 7) * weekly * factor;
+    if (activityClass === 'A') return Math.min(days, Math.max(1, Math.round(raw)));
+    if (activityClass === 'D') return phase === 'historical' ? Math.max(1, Math.round(raw)) : Math.max(0, Math.floor(raw));
+    return Math.max(1, Math.min(days, Math.round(raw)));
+  };
+  const historicalCount = count(historicalDays, 'historical');
+  const futureCount = count(futureDays, 'future');
+  return [
+    ...distributedOffsets(historicalDays, historicalCount, -historicalDays).map((offset, index) => ({ phase: 'historical' as const, date: dateKey(createdAt, offset), seedIndex: index })),
+    ...distributedOffsets(futureDays, futureCount, 0).map((offset, index) => ({ phase: 'future' as const, date: dateKey(createdAt, offset), seedIndex: historicalCount + index })),
+  ];
+}
+
+function knownMemoryText(memories: MemoryFragment[]) {
+  if (!memories.length) return '';
+  return memories.slice(-24).map((memory) => `- ${memory.content}（${memory.evidenceType}，置信度 ${Math.round(memory.confidence * 100)}%）`).join('\n');
+}
+
+function sessionTurnPairs(activityClass: 'A' | 'B' | 'C' | 'D', scale: number) {
+  const base = { A: 3, B: 3, C: 4, D: 2 }[activityClass];
+  return Math.max(2, Math.min(5, base + (scale >= 80 ? 1 : 0)));
+}
+
+async function extractSessionMemories(args: { provider: string; model: string; baseUrl: string; apiKey: string; runId: string; personaId: string; date: string; phase: Phase; messages: ChatMessage[] }) {
+  try {
+    const refs = new Map<string, string>();
+    const transcript = args.messages.map((message, index) => { const ref = `m${index + 1}`; refs.set(ref, message.id); return { ref, speaker: message.speaker, content: message.content }; });
+    const extractionPrompt = buildMemoryExtractionPrompt({ date: args.date, phase: args.phase, transcript });
+    let raw: string;
+    try {
+      raw = await callCompletion({ ...args, system: '你是保守、基于证据的 Memory 抽取器。只返回合法 JSON。', prompt: extractionPrompt, json: true, maxTokens: 1400 });
+    } catch (error) {
+      if (!/response_format|json_object|unsupported|API 400/i.test(error instanceof Error ? error.message : String(error))) throw error;
+      raw = await callCompletion({ ...args, system: '你是保守、基于证据的 Memory 抽取器。只返回合法 JSON，不要 Markdown。', prompt: extractionPrompt, maxTokens: 1400 });
+    }
+    let payload: Record<string, unknown>;
+    try {
+      payload = parseJson(raw) as Record<string, unknown>;
+    } catch {
+      const repaired = await callCompletion({ ...args, system: '修复 JSON，只返回修复后的合法 JSON。', prompt: `请修复下面的输出，不得增添新事实：\n${raw}`, maxTokens: 1400 });
+      payload = parseJson(repaired) as Record<string, unknown>;
+    }
+    const summary = typeof payload.summary === 'string' ? payload.summary.slice(0, 500) : '';
+    return (Array.isArray(payload.updates) ? payload.updates : []).flatMap((rawItem) => {
+      if (!rawItem || typeof rawItem !== 'object') return [];
+      const item = rawItem as Record<string, unknown>;
+      if (!item.content) return [];
+      const sourceMessageIds = (Array.isArray(item.source_refs) ? item.source_refs : []).map((ref: unknown) => refs.get(String(ref))).filter(Boolean) as string[];
+      if (!sourceMessageIds.length) return [];
+      const domain = String(item.domain || 'inner');
+      return [{ id: crypto.randomUUID(), runId: args.runId, personaId: args.personaId, dayKey: args.date, phase: args.phase, domain, kind: String(item.kind || 'fact'), content: String(item.content).slice(0, 320), confidence: Math.max(0, Math.min(1, Number(item.confidence) || .5)), evidenceType: String(item.evidence_type || 'inferred'), privacy: String(item.privacy || 'normal'), socialIntent: Boolean(item.social_intent), sourceMessageIds, status: String(item.status || 'active'), frameworkPath: String(item.framework_path || frameworkPath(domain)), dailySummary: summary || undefined } satisfies MemoryFragment];
+    });
+  } catch {
+    return [];
+  }
 }
 
 export async function GET(request: NextRequest) {
@@ -136,7 +186,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const input = await request.json().catch(() => ({})) as Record<string, any>;
+  const input = await request.json().catch(() => ({})) as Record<string, unknown>;
   try {
     if (input.action === 'create_run') {
       const selectedIds = Array.isArray(input.selectedIds) ? input.selectedIds.filter((id: unknown) => /^U\d{2}$/.test(String(id))) : [];
@@ -150,6 +200,12 @@ export async function POST(request: NextRequest) {
       const model = String(input.model || providerDefaults[provider]?.model || '').trim();
       if (!model) throw new Error('请填写模型名称');
       const run = await createRun({ name: String(input.name || `Memory 实验 ${new Date().toLocaleDateString('zh-CN')}`), provider: provider === 'custom' ? customProviderName.slice(0, 60) : provider, model, historicalDays: Math.max(7, Math.min(90, Number(input.historicalDays) || 28)), futureDays: 14, densityScale: Math.max(10, Math.min(100, Number(input.densityScale) || 30)), selectedIds, promptTemplateId: String(input.promptTemplateId || ''), promptName: String(input.promptName || ''), userPrompt: String(input.userPrompt || ''), agentPrompt: String(input.agentPrompt || ''), guardianSpec: String(input.guardianSpec || '') });
+      const summaries = getPersonaSummaries();
+      await initializeRunTasks(run.id, selectedIds.map((personaId) => {
+        const profile = summaries.find((item) => item.id === personaId)!;
+        const totalSessions = buildSchedule(profile.activityClass, run.historicalDays, run.futureDays, run.densityScale, run.createdAt).length;
+        return { personaId, totalSessions };
+      }));
       return NextResponse.json({ run });
     }
     if (input.action === 'save_prompt') {
@@ -181,7 +237,13 @@ export async function POST(request: NextRequest) {
       await deleteRun(runId);
       return NextResponse.json({ ok: true });
     }
-    if (input.action === 'simulate_persona') {
+    if (input.action === 'reset_failed_tasks') {
+      const runId = String(input.runId || '');
+      if (!runId || runId === BUILTIN_RUN_ID || runId === GUARDIAN_RUN_ID) throw new Error('该实验不能续跑');
+      const personaIds = await resetFailedTasks(runId);
+      return NextResponse.json({ ok: true, personaIds });
+    }
+    if (input.action === 'simulate_step' || input.action === 'simulate_persona') {
       const runId = String(input.runId || '');
       const personaId = String(input.personaId || '');
       const foundProfile = getPersonaSummaries().find((item) => item.id === personaId);
@@ -198,47 +260,66 @@ export async function POST(request: NextRequest) {
       const rawBaseUrl = String(input.baseUrl || envVars[`${provider.toUpperCase()}_BASE_URL`] || envVars.LLM_BASE_URL || defaults.baseUrl);
       if (isCustomProvider && !rawBaseUrl) throw new Error('未知厂商需要填写 OpenAI-compatible Base URL');
       const baseUrl = isCustomProvider ? customProviderBaseUrl(rawBaseUrl) : rawBaseUrl;
-      const historicalDays = Math.max(7, Math.min(90, Number(input.historicalDays) || 28));
-      const futureDays = 14;
-      const scale = Math.max(10, Math.min(100, Number(input.densityScale) || 30));
       const profileJson = buildProfileForPrompt(personaId);
-      const runData = await getRunData(runId);
+      const runData = await getRunData(runId, personaId);
       if (!runData) throw new Error('实验不存在');
+      let task = await getSimulationTask(runId, personaId);
+      if (!task) {
+        const schedule = buildSchedule(profile.activityClass, runData.run.historicalDays, runData.run.futureDays, runData.run.densityScale, runData.run.createdAt);
+        await initializeRunTasks(runId, [{ personaId, totalSessions: schedule.length }]);
+        task = await getSimulationTask(runId, personaId);
+      }
+      if (!task) throw new Error('无法初始化模拟任务');
+      if (task.status === 'completed' || task.status === 'failed') return NextResponse.json({ ok: task.status === 'completed', done: true, task });
       const userPrompt = runData.run.userPrompt;
       const agentPrompt = runData.run.agentPrompt;
       const guardianSpec = runData.run.guardianSpec;
-      let stage: Phase = 'historical';
+      const schedule = buildSchedule(profile.activityClass, runData.run.historicalDays, runData.run.futureDays, runData.run.densityScale, runData.run.createdAt);
+      const slot = schedule[task.nextSession];
+      if (!slot) {
+        const finished = await appendSessionResult({ runId, personaId, model, messages: [], memories: [], nextSession: schedule.length, totalSessions: schedule.length });
+        return NextResponse.json({ ok: true, done: true, task: finished });
+      }
       try {
-        async function simulateWindow(phase: Phase, totalDays: number, firstOffset: number, sequenceStart: number, startingTranscript = '') {
-          const messages: ChatMessage[] = [];
-          const memories: MemoryFragment[] = [];
-          let nextSequence = sequenceStart;
-          let transcript = startingTranscript;
-          for (let processed = 0; processed < totalDays; processed += 7) {
-            const chunkDays = Math.min(7, totalDays - processed);
-            const plan = activityPlan(profile.activityClass, chunkDays, scale);
-            if (!plan.sessionCount) continue;
-            const startOffset = firstOffset + processed;
-            const payload = await callModel(provider, model, baseUrl, apiKey, buildConversationPrompt({ profileJson, phase, startDate: dateKey(startOffset), endDate: dateKey(startOffset + chunkDays - 1), ...plan, agent: profile.agent, priorTranscript: transcript, userPrompt, agentPrompt, guardianSpec }));
-            const normalized = normalizePhase(payload, phase, runId, personaId, nextSequence);
-            messages.push(...normalized.messages); memories.push(...normalized.memories); nextSequence = normalized.nextSequence;
-            transcript = [...messages].slice(-50).map((message) => `${message.speaker === 'user' ? profile.name : 'Agent'}：${message.content}`).join('\n');
+        const source = getPersonaSource(personaId);
+        if (!source) throw new Error('找不到用户原始 Memory');
+        const anchors = collectDialogueAnchors(source, profile);
+        const anchor = anchors[slot.seedIndex % anchors.length];
+        const eventSeed = `${anchor.topic}。事实素材：${anchor.memory}。请把它变成今天刚发生或刚想起的具体生活片段，不要照抄结构化措辞。`;
+        const prior = runData.messages.slice(-36).map((message) => ({ speaker: message.speaker, content: message.content }));
+        const session: Array<{ speaker: 'user' | 'agent'; content: string }> = [];
+        const messageRows: ChatMessage[] = [];
+        const sessionId = `${runId}-${personaId}-${task.nextSession}`;
+        const startHour = 12 + ((slot.seedIndex * 7 + Number(personaId.slice(1))) % 11);
+        const baseTime = new Date(`${slot.date}T${String(startHour).padStart(2, '0')}:${String((slot.seedIndex * 13) % 60).padStart(2, '0')}:00+08:00`).getTime();
+        let sequence = runData.messages.reduce((maximum, message) => Math.max(maximum, message.sequence + 1), 0);
+        const plan = activityPlan(profile.activityClass, 7, runData.run.densityScale);
+        const pairs = sessionTurnPairs(profile.activityClass, runData.run.densityScale);
+        for (let turn = 0; turn < pairs; turn += 1) {
+          const userRaw = await callCompletion({ provider, model, baseUrl, apiKey, system: '你只扮演指定的真实用户。不要替守护者说话，也不要解释模拟过程。', prompt: buildUserTurnPrompt({ template: userPrompt, profileJson, phase: slot.phase, date: slot.date, baseline: plan.baseline, agent: profile.agent, guardianSpec, transcript: [...prior, ...session], userName: profile.name, eventSeed, turnIndex: turn }), maxTokens: 380 });
+          const userBubbles = splitBubbles(userRaw);
+          if (!userBubbles.length) throw new Error('用户角色返回了空消息');
+          for (const content of userBubbles) {
+            session.push({ speaker: 'user', content });
+            messageRows.push({ id: crypto.randomUUID(), runId, personaId, phase: slot.phase, sessionId, timestamp: new Date(baseTime + messageRows.length * 75_000).toISOString(), speaker: 'user', content, sequence: sequence++ });
           }
-          return { messages, memories, nextSequence };
+          const agentRaw = await callCompletion({ provider, model, baseUrl, apiKey, system: '你只扮演用户的长期 AI 守护者。只回应已经说出口的内容，不得读取或猜测隐藏人设。', prompt: buildGuardianTurnPrompt({ template: agentPrompt, phase: slot.phase, date: slot.date, baseline: plan.baseline, agent: profile.agent, guardianSpec, transcript: [...prior, ...session], knownMemory: knownMemoryText(runData.memories), userName: profile.name }), maxTokens: 380 });
+          const agentBubbles = splitBubbles(agentRaw);
+          if (!agentBubbles.length) throw new Error('守护者角色返回了空消息');
+          for (const content of agentBubbles) {
+            session.push({ speaker: 'agent', content });
+            messageRows.push({ id: crypto.randomUUID(), runId, personaId, phase: slot.phase, sessionId, timestamp: new Date(baseTime + messageRows.length * 75_000).toISOString(), speaker: 'agent', content, sequence: sequence++ });
+          }
         }
-        const historical = await simulateWindow('historical', historicalDays, -historicalDays, 0);
-        stage = 'future';
-        const priorTranscript = historical.messages.slice(-60).map((m) => `${m.speaker === 'user' ? profile.name : 'Agent'}：${m.content}`).join('\n');
-        const future = await simulateWindow('future', futureDays, 0, historical.nextSequence, priorTranscript);
-        const messages = [...historical.messages, ...future.messages];
-        const memories = [...historical.memories, ...future.memories];
-        if (!messages.length) throw new Error('模型未生成有效对话');
-        await savePersonaResult(runId, personaId, model, messages, memories);
-        return NextResponse.json({ ok: true, personaId, messageCount: messages.length, memoryCount: memories.length });
+        const memories = await extractSessionMemories({ provider, model, baseUrl, apiKey, runId, personaId, date: slot.date, phase: slot.phase, messages: messageRows });
+        const nextTask = await appendSessionResult({ runId, personaId, model, messages: messageRows, memories, nextSession: task.nextSession + 1, totalSessions: schedule.length });
+        return NextResponse.json({ ok: true, personaId, done: nextTask?.status === 'completed', session: task.nextSession + 1, totalSessions: schedule.length, messageCount: messageRows.length, memoryCount: memories.length, task: nextTask });
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        await saveFailure(runId, personaId, stage, reason);
-        return NextResponse.json({ error: reason, personaId, phase: stage }, { status: 502 });
+        const status = (error as Error & { status?: number }).status;
+        const permanent = status === 401 || status === 402 || status === 403 || status === 404;
+        const nextTask = await recordTaskError(runId, personaId, slot.phase, reason, permanent);
+        return NextResponse.json({ error: reason, personaId, phase: slot.phase, retryable: nextTask?.status !== 'failed', done: nextTask?.status === 'failed', task: nextTask }, { status: permanent ? 400 : 502 });
       }
     }
     throw new Error('未知操作');

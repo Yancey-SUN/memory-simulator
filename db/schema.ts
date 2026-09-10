@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 export const simulationRuns = sqliteTable('simulation_runs', {
   id: text('id').primaryKey(), name: text('name').notNull(), status: text('status').notNull(), createdAt: text('created_at').notNull(), completedAt: text('completed_at'), provider: text('provider').notNull(), model: text('model').notNull(), historicalDays: integer('historical_days').notNull(), futureDays: integer('future_days').notNull(), densityScale: integer('density_scale').notNull(), selectedCount: integer('selected_count').notNull(), completedCount: integer('completed_count').notNull().default(0), failedCount: integer('failed_count').notNull().default(0), errorSummary: text('error_summary'), selectedIdsJson: text('selected_ids_json').notNull(),
@@ -21,3 +21,7 @@ export const memoryFragments = sqliteTable('memory_fragments', {
 export const simulationFailures = sqliteTable('simulation_failures', {
   id: text('id').primaryKey(), runId: text('run_id').notNull(), personaId: text('persona_id').notNull(), phase: text('phase').notNull(), message: text('message').notNull(), createdAt: text('created_at').notNull(),
 }, (table) => [index('failures_run_idx').on(table.runId)]);
+
+export const simulationTasks = sqliteTable('simulation_tasks', {
+  runId: text('run_id').notNull(), personaId: text('persona_id').notNull(), status: text('status').notNull().default('pending'), nextSession: integer('next_session').notNull().default(0), totalSessions: integer('total_sessions').notNull(), attempts: integer('attempts').notNull().default(0), lastError: text('last_error'), updatedAt: text('updated_at').notNull(),
+}, (table) => [primaryKey({ columns: [table.runId, table.personaId] }), index('tasks_run_status_idx').on(table.runId, table.status)]);
