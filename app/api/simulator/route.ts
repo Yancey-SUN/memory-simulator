@@ -7,6 +7,7 @@ import type { ChatMessage, MemoryFragment, Phase } from '@/lib/types';
 import { collectDialogueAnchors } from '@/lib/memory-dialogue-engine';
 import { BUILTIN_RUN_ID, buildBuiltinRun } from '@/lib/builtin-simulation';
 import { GUARDIAN_RUN_ID, buildGuardianOptimizedRun } from '@/lib/guardian-simulation';
+import { GUARDIAN_V2_RUN_ID, buildGuardianV2Run } from '@/lib/guardian-v2-simulation';
 
 export const runtime = 'edge';
 
@@ -165,6 +166,9 @@ export async function GET(request: NextRequest) {
     const runId = request.nextUrl.searchParams.get('runId');
     const personaId = request.nextUrl.searchParams.get('personaId') || undefined;
     if (runId) {
+      if (runId === GUARDIAN_V2_RUN_ID) {
+        return NextResponse.json(buildGuardianV2Run(personaId));
+      }
       if (runId === GUARDIAN_RUN_ID) {
         return NextResponse.json(buildGuardianOptimizedRun(personaId));
       }
@@ -179,7 +183,8 @@ export async function GET(request: NextRequest) {
     const [storedRuns, promptTemplates] = await Promise.all([listRuns(), listPromptTemplates()]);
     const builtinRun = buildBuiltinRun().run;
     const guardianRun = buildGuardianOptimizedRun().run;
-    return NextResponse.json({ personas: getPersonaSummaries(), promptTemplates, runs: [guardianRun, builtinRun, ...storedRuns.filter((run) => run.id !== BUILTIN_RUN_ID && run.id !== GUARDIAN_RUN_ID)] });
+    const guardianV2Run = buildGuardianV2Run().run;
+    return NextResponse.json({ personas: getPersonaSummaries(), promptTemplates, runs: [guardianV2Run, guardianRun, builtinRun, ...storedRuns.filter((run) => run.id !== BUILTIN_RUN_ID && run.id !== GUARDIAN_RUN_ID && run.id !== GUARDIAN_V2_RUN_ID)] });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : '读取失败' }, { status: 500 });
   }
@@ -219,7 +224,7 @@ export async function POST(request: NextRequest) {
     }
     if (input.action === 'update_run_prompt') {
       const runId = String(input.runId || '');
-      if (!runId || runId === BUILTIN_RUN_ID || runId === GUARDIAN_RUN_ID) throw new Error('内置版本通过共享 Prompt 模板更新');
+      if (!runId || runId === BUILTIN_RUN_ID || runId === GUARDIAN_RUN_ID || runId === GUARDIAN_V2_RUN_ID) throw new Error('内置版本通过共享 Prompt 模板更新');
       await updateRunPrompt(runId, { id: String(input.promptTemplateId || ''), name: String(input.promptName || ''), userPrompt: String(input.userPrompt || ''), agentPrompt: String(input.agentPrompt || ''), guardianSpec: String(input.guardianSpec || '') });
       return NextResponse.json({ ok: true });
     }
@@ -227,19 +232,19 @@ export async function POST(request: NextRequest) {
       const runId = String(input.runId || '');
       const name = String(input.name || '').trim();
       const notes = String(input.notes || '').trim();
-      if (!runId || !name || runId === BUILTIN_RUN_ID || runId === GUARDIAN_RUN_ID) throw new Error('内置基线不能修改');
+      if (!runId || !name || runId === BUILTIN_RUN_ID || runId === GUARDIAN_RUN_ID || runId === GUARDIAN_V2_RUN_ID) throw new Error('内置基线不能修改');
       await updateRunMetadata(runId, name, notes);
       return NextResponse.json({ ok: true, name, notes });
     }
     if (input.action === 'delete_run') {
       const runId = String(input.runId || '');
-      if (!runId || runId === BUILTIN_RUN_ID || runId === GUARDIAN_RUN_ID) throw new Error('内置基线不能删除');
+      if (!runId || runId === BUILTIN_RUN_ID || runId === GUARDIAN_RUN_ID || runId === GUARDIAN_V2_RUN_ID) throw new Error('内置基线不能删除');
       await deleteRun(runId);
       return NextResponse.json({ ok: true });
     }
     if (input.action === 'reset_failed_tasks') {
       const runId = String(input.runId || '');
-      if (!runId || runId === BUILTIN_RUN_ID || runId === GUARDIAN_RUN_ID) throw new Error('该实验不能续跑');
+      if (!runId || runId === BUILTIN_RUN_ID || runId === GUARDIAN_RUN_ID || runId === GUARDIAN_V2_RUN_ID) throw new Error('该实验不能续跑');
       const personaIds = await resetFailedTasks(runId);
       return NextResponse.json({ ok: true, personaIds });
     }
