@@ -28,6 +28,14 @@ export type AgentCard = {
   principle: string;
   imperfection: string;
   interests: string;
+  archetype?: string;
+  dayMaster?: string;
+  element?: string;
+  yinYang?: string;
+  resonance?: string[];
+  regulation?: string[];
+  compiledSignature?: Record<string, string>;
+  traits?: Record<string, number>;
 };
 
 export type ChatMessage = {
@@ -80,6 +88,7 @@ export type RunRecord = {
   promptName?: string;
   userPrompt?: string;
   agentPrompt?: string;
+  guardianSpec?: string;
 };
 
 export type PromptTemplate = {
@@ -87,6 +96,7 @@ export type PromptTemplate = {
   name: string;
   userPrompt: string;
   agentPrompt: string;
+  guardianSpec: string;
   createdAt: string;
   updatedAt: string;
   builtin?: boolean;

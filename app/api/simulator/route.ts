@@ -5,6 +5,7 @@ import { buildConversationPrompt } from '@/lib/prompts';
 import { createRun, getRunData, listPromptTemplates, listRuns, renameRun, saveFailure, savePersonaResult, savePromptTemplate, updateRunPrompt } from '@/lib/store';
 import type { ChatMessage, MemoryFragment, Phase } from '@/lib/types';
 import { BUILTIN_RUN_ID, buildBuiltinRun } from '@/lib/builtin-simulation';
+import { GUARDIAN_RUN_ID, buildGuardianOptimizedRun } from '@/lib/guardian-simulation';
 
 export const runtime = 'edge';
 
@@ -105,6 +106,11 @@ export async function GET(request: NextRequest) {
     const runId = request.nextUrl.searchParams.get('runId');
     const personaId = request.nextUrl.searchParams.get('personaId') || undefined;
     if (runId) {
+      if (runId === GUARDIAN_RUN_ID) {
+        const data = buildGuardianOptimizedRun(personaId);
+        const prompt = (await listPromptTemplates()).find((item) => item.id === data.run.promptTemplateId);
+        return NextResponse.json(prompt ? { ...data, run: { ...data.run, promptName: prompt.name, userPrompt: prompt.userPrompt, agentPrompt: prompt.agentPrompt, guardianSpec: prompt.guardianSpec } } : data);
+      }
       if (runId === BUILTIN_RUN_ID) {
         const data = buildBuiltinRun(personaId);
         const prompt = (await listPromptTemplates()).find((item) => item.id === data.run.promptTemplateId);
@@ -118,8 +124,11 @@ export async function GET(request: NextRequest) {
     const [storedRuns, promptTemplates] = await Promise.all([listRuns(), listPromptTemplates()]);
     const builtin = buildBuiltinRun().run;
     const builtinPrompt = promptTemplates.find((item) => item.id === builtin.promptTemplateId);
-    const builtinRun = builtinPrompt ? { ...builtin, promptName: builtinPrompt.name, userPrompt: builtinPrompt.userPrompt, agentPrompt: builtinPrompt.agentPrompt } : builtin;
-    return NextResponse.json({ personas: getPersonaSummaries(), promptTemplates, runs: [builtinRun, ...storedRuns.filter((run) => run.id !== BUILTIN_RUN_ID)] });
+    const builtinRun = builtinPrompt ? { ...builtin, promptName: builtinPrompt.name, userPrompt: builtinPrompt.userPrompt, agentPrompt: builtinPrompt.agentPrompt, guardianSpec: builtinPrompt.guardianSpec } : builtin;
+    const guardian = buildGuardianOptimizedRun().run;
+    const guardianPrompt = promptTemplates.find((item) => item.id === guardian.promptTemplateId);
+    const guardianRun = guardianPrompt ? { ...guardian, promptName: guardianPrompt.name, userPrompt: guardianPrompt.userPrompt, agentPrompt: guardianPrompt.agentPrompt, guardianSpec: guardianPrompt.guardianSpec } : guardian;
+    return NextResponse.json({ personas: getPersonaSummaries(), promptTemplates, runs: [guardianRun, builtinRun, ...storedRuns.filter((run) => run.id !== BUILTIN_RUN_ID && run.id !== GUARDIAN_RUN_ID)] });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : '读取失败' }, { status: 500 });
   }
@@ -131,27 +140,28 @@ export async function POST(request: NextRequest) {
     if (input.action === 'create_run') {
       const selectedIds = Array.isArray(input.selectedIds) ? input.selectedIds.filter((id: unknown) => /^U\d{2}$/.test(String(id))) : [];
       if (!selectedIds.length) throw new Error('请至少选择 1 个用户');
-      const run = await createRun({ name: String(input.name || `Memory 实验 ${new Date().toLocaleDateString('zh-CN')}`), provider: String(input.provider || 'deepseek'), model: String(input.model || 'deepseek-chat'), historicalDays: Math.max(7, Math.min(90, Number(input.historicalDays) || 28)), futureDays: 14, densityScale: Math.max(10, Math.min(100, Number(input.densityScale) || 30)), selectedIds, promptTemplateId: String(input.promptTemplateId || ''), promptName: String(input.promptName || ''), userPrompt: String(input.userPrompt || ''), agentPrompt: String(input.agentPrompt || '') });
+      const run = await createRun({ name: String(input.name || `Memory 实验 ${new Date().toLocaleDateString('zh-CN')}`), provider: String(input.provider || 'deepseek'), model: String(input.model || 'deepseek-chat'), historicalDays: Math.max(7, Math.min(90, Number(input.historicalDays) || 28)), futureDays: 14, densityScale: Math.max(10, Math.min(100, Number(input.densityScale) || 30)), selectedIds, promptTemplateId: String(input.promptTemplateId || ''), promptName: String(input.promptName || ''), userPrompt: String(input.userPrompt || ''), agentPrompt: String(input.agentPrompt || ''), guardianSpec: String(input.guardianSpec || '') });
       return NextResponse.json({ run });
     }
     if (input.action === 'save_prompt') {
       const name = String(input.name || '').trim();
       const userPrompt = String(input.userPrompt || '').trim();
       const agentPrompt = String(input.agentPrompt || '').trim();
+      const guardianSpec = String(input.guardianSpec || '').trim();
       if (!name || !userPrompt || !agentPrompt) throw new Error('Prompt 名称、用户 Prompt 和 Agent Prompt 都不能为空');
-      const prompt = await savePromptTemplate({ id: input.id ? String(input.id) : undefined, name, userPrompt, agentPrompt });
+      const prompt = await savePromptTemplate({ id: input.id ? String(input.id) : undefined, name, userPrompt, agentPrompt, guardianSpec });
       return NextResponse.json({ prompt });
     }
     if (input.action === 'update_run_prompt') {
       const runId = String(input.runId || '');
-      if (!runId || runId === BUILTIN_RUN_ID) throw new Error('基线版本通过默认 Prompt 模板更新');
-      await updateRunPrompt(runId, { id: String(input.promptTemplateId || ''), name: String(input.promptName || ''), userPrompt: String(input.userPrompt || ''), agentPrompt: String(input.agentPrompt || '') });
+      if (!runId || runId === BUILTIN_RUN_ID || runId === GUARDIAN_RUN_ID) throw new Error('内置版本通过共享 Prompt 模板更新');
+      await updateRunPrompt(runId, { id: String(input.promptTemplateId || ''), name: String(input.promptName || ''), userPrompt: String(input.userPrompt || ''), agentPrompt: String(input.agentPrompt || ''), guardianSpec: String(input.guardianSpec || '') });
       return NextResponse.json({ ok: true });
     }
     if (input.action === 'rename_run') {
       const runId = String(input.runId || '');
       const name = String(input.name || '').trim();
-      if (!runId || !name || runId === BUILTIN_RUN_ID) throw new Error('该版本不能重命名');
+      if (!runId || !name || runId === BUILTIN_RUN_ID || runId === GUARDIAN_RUN_ID) throw new Error('该版本不能重命名');
       await renameRun(runId, name);
       return NextResponse.json({ ok: true, name });
     }
@@ -176,6 +186,7 @@ export async function POST(request: NextRequest) {
       if (!runData) throw new Error('实验不存在');
       const userPrompt = runData.run.userPrompt;
       const agentPrompt = runData.run.agentPrompt;
+      const guardianSpec = runData.run.guardianSpec;
       let stage: Phase = 'historical';
       try {
         async function simulateWindow(phase: Phase, totalDays: number, firstOffset: number, sequenceStart: number, startingTranscript = '') {
@@ -188,7 +199,7 @@ export async function POST(request: NextRequest) {
             const plan = activityPlan(profile.activityClass, chunkDays, scale);
             if (!plan.sessionCount) continue;
             const startOffset = firstOffset + processed;
-            const payload = await callModel(provider, model, baseUrl, apiKey, buildConversationPrompt({ profileJson, phase, startDate: dateKey(startOffset), endDate: dateKey(startOffset + chunkDays - 1), ...plan, agent: profile.agent, priorTranscript: transcript, userPrompt, agentPrompt }));
+            const payload = await callModel(provider, model, baseUrl, apiKey, buildConversationPrompt({ profileJson, phase, startDate: dateKey(startOffset), endDate: dateKey(startOffset + chunkDays - 1), ...plan, agent: profile.agent, priorTranscript: transcript, userPrompt, agentPrompt, guardianSpec }));
             const normalized = normalizePhase(payload, phase, runId, personaId, nextSequence);
             messages.push(...normalized.messages); memories.push(...normalized.memories); nextSequence = normalized.nextSequence;
             transcript = [...messages].slice(-50).map((message) => `${message.speaker === 'user' ? profile.name : 'Agent'}：${message.content}`).join('\n');

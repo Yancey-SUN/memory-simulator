@@ -2,11 +2,11 @@ import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 export const simulationRuns = sqliteTable('simulation_runs', {
   id: text('id').primaryKey(), name: text('name').notNull(), status: text('status').notNull(), createdAt: text('created_at').notNull(), completedAt: text('completed_at'), provider: text('provider').notNull(), model: text('model').notNull(), historicalDays: integer('historical_days').notNull(), futureDays: integer('future_days').notNull(), densityScale: integer('density_scale').notNull(), selectedCount: integer('selected_count').notNull(), completedCount: integer('completed_count').notNull().default(0), failedCount: integer('failed_count').notNull().default(0), errorSummary: text('error_summary'), selectedIdsJson: text('selected_ids_json').notNull(),
-  promptTemplateId: text('prompt_template_id'), promptName: text('prompt_name'), userPrompt: text('user_prompt'), agentPrompt: text('agent_prompt'),
+  promptTemplateId: text('prompt_template_id'), promptName: text('prompt_name'), userPrompt: text('user_prompt'), agentPrompt: text('agent_prompt'), guardianSpec: text('guardian_spec'),
 });
 
 export const promptTemplates = sqliteTable('prompt_templates', {
-  id: text('id').primaryKey(), name: text('name').notNull(), userPrompt: text('user_prompt').notNull(), agentPrompt: text('agent_prompt').notNull(), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
+  id: text('id').primaryKey(), name: text('name').notNull(), userPrompt: text('user_prompt').notNull(), agentPrompt: text('agent_prompt').notNull(), guardianSpec: text('guardian_spec').notNull().default(''), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
 }, (table) => [index('prompt_templates_updated_idx').on(table.updatedAt)]);
 
 export const chatMessages = sqliteTable('chat_messages', {
