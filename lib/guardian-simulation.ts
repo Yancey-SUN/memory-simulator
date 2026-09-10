@@ -1,48 +1,10 @@
-import { buildBuiltinRun } from './builtin-simulation';
 import { GUARDIAN_AGENT_PROMPT, GUARDIAN_MVP_SPEC, GUARDIAN_PROMPT_TEMPLATE, GUARDIAN_USER_PROMPT } from './prompts';
 import { getPersonaSummaries, getPersonaSource } from './personas';
-import type { ChatMessage, MemoryFragment, RunRecord } from './types';
+import { everydayMoments, guardianScenes } from './guardian-scenes';
+import type { ChatMessage, MemoryFragment, Phase, RunRecord } from './types';
 
 export const GUARDIAN_RUN_ID = 'guardian-human-v1';
 const anchor = '2026-09-10';
-
-const variants: Record<string, Record<string, string[]>> = {
-  '同行生长型': {
-    '嗯，我在听。': ['嗯，你接着说', '然后呢，我跟上了'],
-    '然后呢？': ['然后呢？', '后面还有吧？'],
-    '懂了': ['懂了，先到这儿', '行，我跟上了'],
-    '行，先这样': ['行，先往前挪一点', '行，今天先到这儿'],
-    '我记得': ['记得，后面还有变化吧', '嗯，是上次那个'],
-  },
-  '稳燃共振型': {
-    '嗯，我在听。': ['嗯嗯，你继续', '在听在听'],
-    '然后呢？': ['然后呢然后呢', '等等，然后呢？'],
-    '懂了': ['懂了哈哈', '啊，懂了'],
-    '行，先这样': ['行，先这样，别加码', '好，今天先这样'],
-    '我记得': ['记得啊', '记得，就是上次那个'],
-  },
-  '松土提气型': {
-    '嗯，我在听。': ['嗯，你慢慢说', '我在，继续说'],
-    '然后呢？': ['后面呢？', '嗯，后来呢？'],
-    '懂了': ['嗯，懂了', '好，这下懂了'],
-    '行，先这样': ['行，今天先这样', '好，先别逼自己想完'],
-    '我记得': ['嗯，我记得', '记得，是那件事'],
-  },
-  '柔锋型': {
-    '嗯，我在听。': ['嗯，继续', '我在听'],
-    '然后呢？': ['然后？', '后面呢？'],
-    '懂了': ['懂了', '行，明白了'],
-    '行，先这样': ['行，先这样', '可以，先停这儿'],
-    '我记得': ['记得', '是上次那个'],
-  },
-  '定流型': {
-    '嗯，我在听。': ['嗯，我跟着呢', '在听，你继续'],
-    '然后呢？': ['然后呢，我感觉还有后半句', '后来呢？'],
-    '懂了': ['嗯，这下接上了', '懂了，原来卡在这儿'],
-    '行，先这样': ['行，先放这儿', '好，晚点想起再接着说'],
-    '我记得': ['记得，这条线还没断', '嗯，是上次那件事'],
-  },
-};
 
 function hash(text: string) {
   let value = 2166136261;
@@ -50,62 +12,87 @@ function hash(text: string) {
   return Math.abs(value >>> 0);
 }
 
-function optimizeAgentLine(line: string, archetype: string, previousUser: string, key: string) {
-  if (/这个我记住，但不会替你随便推进/.test(line)) return '嗯，这个想法已经挺具体了';
-  if (/努力去实现这个目标是很好的/.test(line)) return '好，尽量就行，别给自己加码';
-  if (/我不会把你改写|信息密度|画像|Memory|匹配系统/.test(line)) return '嗯，我知道你现在不是一直都这样';
-  const choices = variants[archetype]?.[line];
-  let result = choices?.[hash(key) % choices.length] ?? line;
-  if (/^我努力[。！!？?]*$/.test(previousUser.trim())) result = archetype === '稳燃共振型' ? '好哈哈，尽量就行，别又给自己加码' : '好，尽量就行，没做到也没事';
-  if (/^算了[。！!？?]*$/.test(previousUser.trim())) result = '行，那今天先不碰它';
-  if (/^都可以[。！!？?]*$/.test(previousUser.trim())) result = '那就挑最省事的那个';
-  if (/^还行[。！!？?]*$/.test(previousUser.trim())) result = '这个“还行”听着很保留';
-  if (archetype === '柔锋型') result = result.replace(/^这件事确实/, '这事').replace(/。$/, '');
-  if (archetype === '稳燃共振型' && /^(很好|可以)$/.test(result)) result = `${result}哈哈`;
-  return result.slice(0, 58);
+function dateAt(offset: number) {
+  const date = new Date(`${anchor}T12:00:00+08:00`);
+  date.setUTCDate(date.getUTCDate() + offset);
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+}
+
+function momentOffsets(activityClass: string, phase: Phase) {
+  const historical: Record<string, number[]> = { A: Array.from({ length: 28 }, (_, index) => index - 28), B: Array.from({ length: 14 }, (_, index) => index * 2 - 28), C: [-22, -7], D: [-16] };
+  const future: Record<string, number[]> = { A: Array.from({ length: 14 }, (_, index) => index), B: [0, 2, 4, 6, 8, 10, 12], C: [6], D: [] };
+  return (phase === 'historical' ? historical : future)[activityClass] ?? [];
+}
+
+function frameworkFor(domain: string) {
+  if (domain === 'relationship') return '03_Relationship_Record';
+  if (domain === 'permission') return '04_Privacy_and_Permission';
+  if (domain === 'social_intent') return '05_Matching_Profile.Social_Intent';
+  return `01_Self_Memory.${domain}`;
+}
+
+function tuneMomentLine(line: string, archetype: string, key: string) {
+  const variant = hash(key) % 4;
+  if (archetype === '稳燃共振型' && variant === 0 && !/[？?]$/.test(line) && !/[哈啊]/.test(line)) return `${line.replace(/[。！!]$/, '')}哈哈`;
+  if (archetype === '柔锋型') return line.replace(/^很好，/, '').replace(/。$/, '');
+  if (archetype === '定流型' && variant === 1) return line.replace(/^那/, '嗯，那');
+  if (archetype === '同行生长型' && variant === 2 && /先/.test(line)) return line.replace('先', '那就先');
+  return line;
+}
+
+function tuneUserLine(line: string, personaId: string, messageIndex: number, key: string) {
+  const variant = hash(`${personaId}-${key}`) % 6;
+  if (variant === 0) return line.replace('我刚', '我刚刚').replace('今天', '今天居然');
+  if (variant === 1) return line.replace('宿舍', '寝室').replace('食堂', '二食堂').replace('图书馆', '图书馆二楼');
+  if (variant === 2) return line.replace('结果', '然后').replace('现在我', '我现在').replace('特别', '巨');
+  if (variant === 3 && messageIndex === 0) return `救命，${line}`;
+  if (variant === 4) return line.replace('老师', '任课老师').replace('刚才', '刚刚').replace('有点', '有一点');
+  return line.replace(/[。！!]$/, '');
 }
 
 export function buildGuardianOptimizedRun(personaFilter?: string) {
-  const base = buildBuiltinRun(personaFilter);
-  const profiles = new Map(getPersonaSummaries().map((profile) => [profile.id, profile]));
-  const idMap = new Map<string, string>();
-  const previousUser = new Map<string, string>();
-  const messages: ChatMessage[] = base.messages.map((message) => {
-    const id = message.id.replace(/^/, 'gh1-');
-    idMap.set(message.id, id);
-    if (message.speaker === 'user') previousUser.set(message.personaId, message.content);
-    const profile = profiles.get(message.personaId);
-    const content = message.speaker === 'agent' && profile
-      ? optimizeAgentLine(message.content, profile.agent.archetype || '', previousUser.get(message.personaId) || '', message.id)
-      : message.content;
-    return { ...message, id, runId: GUARDIAN_RUN_ID, content };
-  });
-  const memories: MemoryFragment[] = base.memories.map((memory) => ({
-    ...memory,
-    id: `gh1-${memory.id}`,
-    runId: GUARDIAN_RUN_ID,
-    sourceMessageIds: memory.sourceMessageIds.map((id) => idMap.get(id)).filter(Boolean) as string[],
-  }));
-  const run: RunRecord = {
-    id: GUARDIAN_RUN_ID,
-    name: '伴生精灵人感优化v1',
-    status: 'completed',
-    createdAt: `${anchor}T02:00:00.000Z`,
-    completedAt: `${anchor}T02:32:00.000Z`,
-    provider: 'Codex 直接生成',
-    model: 'BaZi Guardian Match MVP v1',
-    historicalDays: 28,
-    futureDays: 14,
-    densityScale: 50,
-    selectedCount: personaFilter ? 1 : 32,
-    completedCount: personaFilter ? 1 : 32,
-    failedCount: 0,
-    errorSummary: null,
-    promptTemplateId: GUARDIAN_PROMPT_TEMPLATE.id,
-    promptName: GUARDIAN_PROMPT_TEMPLATE.name,
-    userPrompt: GUARDIAN_USER_PROMPT,
-    agentPrompt: GUARDIAN_AGENT_PROMPT,
-    guardianSpec: GUARDIAN_MVP_SPEC,
-  };
-  return { run, selectedIds: personaFilter ? [personaFilter] : base.selectedIds, messages, memories, failures: [], personaSource: personaFilter ? getPersonaSource(personaFilter) : undefined };
+  const profiles = getPersonaSummaries();
+  const selectedIds = profiles.map((profile) => profile.id);
+  const messages: ChatMessage[] = [];
+  const memories: MemoryFragment[] = [];
+  let sequence = 0;
+
+  for (const profile of profiles) {
+    if (personaFilter && profile.id !== personaFilter) continue;
+    const curated = guardianScenes[profile.id];
+    if (!curated) continue;
+    const idNumber = Number(profile.id.slice(1));
+    for (const phase of ['historical', 'future'] as Phase[]) {
+      const scene = curated[phase];
+      const primaryOffset = phase === 'historical' ? ({ A: -12, B: -11, C: -8, D: -15 }[profile.activityClass] ?? -10) : ({ A: 7, B: 8, C: 9, D: 10 }[profile.activityClass] ?? 8);
+      const primaryDay = dateAt(primaryOffset);
+      const primaryBase = new Date(`${primaryDay}T${phase === 'historical' ? '20' : '19'}:${String(8 + idNumber % 42).padStart(2, '0')}:00+08:00`).getTime();
+      const primaryIds: string[] = [];
+      scene.messages.forEach(([speaker, content], index) => {
+        const id = `gh2-${profile.id}-${phase[0]}-primary-${index + 1}`;
+        primaryIds.push(id);
+        const voiced = speaker === 'agent' ? tuneMomentLine(content, profile.agent.archetype || '', id) : content;
+        messages.push({ id, runId: GUARDIAN_RUN_ID, personaId: profile.id, phase, sessionId: `${profile.id}-${phase}-primary-v2`, timestamp: new Date(primaryBase + index * 85_000).toISOString(), speaker, content: voiced, sequence: sequence++ });
+      });
+      scene.memories.forEach((memory, index) => memories.push({ id: `gh2-${profile.id}-${phase[0]}-memory-${index + 1}`, runId: GUARDIAN_RUN_ID, personaId: profile.id, dayKey: primaryDay, phase, domain: memory.domain, kind: memory.kind ?? 'fact', content: memory.content, confidence: memory.kind === 'observed' || memory.kind === 'current_state' ? .76 : .93, evidenceType: memory.kind === 'observed' || memory.kind === 'stable_trait' || memory.kind === 'current_state' ? 'observed' : 'explicit', privacy: memory.privacy ?? 'normal', socialIntent: Boolean(memory.socialIntent), sourceMessageIds: [primaryIds[memory.source]].filter(Boolean), status: 'active', frameworkPath: frameworkFor(memory.domain), dailySummary: memory.content }));
+      momentOffsets(profile.activityClass, phase).forEach((offset, momentIndex) => {
+        if (offset === primaryOffset) return;
+        const day = dateAt(offset);
+        const poolIndex = (idNumber * 7 + momentIndex + (phase === 'future' ? 28 : 0)) % everydayMoments.length;
+        const moment = everydayMoments[poolIndex];
+        const baseHour = 11 + hash(`${profile.id}-${day}`) % 11;
+        const baseMinute = hash(`${day}-${profile.id}-guardian`) % 47;
+        const base = new Date(`${day}T${String(baseHour).padStart(2, '0')}:${String(baseMinute).padStart(2, '0')}:00+08:00`).getTime();
+        moment.forEach(([speaker, rawContent], index) => {
+          const id = `gh2-${profile.id}-${phase[0]}-moment-${momentIndex + 1}-${index + 1}`;
+          const content = speaker === 'agent' ? tuneMomentLine(rawContent, profile.agent.archetype || '', id) : tuneUserLine(rawContent, profile.id, index, id);
+          messages.push({ id, runId: GUARDIAN_RUN_ID, personaId: profile.id, phase, sessionId: `${profile.id}-${phase}-moment-${momentIndex + 1}`, timestamp: new Date(base + index * 70_000).toISOString(), speaker, content, sequence: sequence++ });
+        });
+      });
+    }
+  }
+  messages.sort((a, b) => a.timestamp.localeCompare(b.timestamp) || a.sequence - b.sequence);
+  messages.forEach((message, index) => { message.sequence = index; });
+  const run: RunRecord = { id: GUARDIAN_RUN_ID, name: '伴生精灵人感优化v1', status: 'completed', createdAt: `${anchor}T04:00:00.000Z`, completedAt: `${anchor}T04:40:00.000Z`, provider: 'Codex 独立重新生成', model: 'BaZi Guardian Match MVP v1.1', historicalDays: 28, futureDays: 14, densityScale: 50, selectedCount: personaFilter ? 1 : 32, completedCount: personaFilter ? 1 : 32, failedCount: 0, errorSummary: null, promptTemplateId: GUARDIAN_PROMPT_TEMPLATE.id, promptName: GUARDIAN_PROMPT_TEMPLATE.name, userPrompt: GUARDIAN_USER_PROMPT, agentPrompt: GUARDIAN_AGENT_PROMPT, guardianSpec: GUARDIAN_MVP_SPEC, notes: '独立重新生成：不继承旧基线对话；短回复、语用理解、跨日连续性与具体 hook。' };
+  return { run, selectedIds: personaFilter ? [personaFilter] : selectedIds, messages, memories, failures: [], personaSource: personaFilter ? getPersonaSource(personaFilter) : undefined };
 }

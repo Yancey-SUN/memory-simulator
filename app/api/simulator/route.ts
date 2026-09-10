@@ -116,14 +116,10 @@ export async function GET(request: NextRequest) {
     const personaId = request.nextUrl.searchParams.get('personaId') || undefined;
     if (runId) {
       if (runId === GUARDIAN_RUN_ID) {
-        const data = buildGuardianOptimizedRun(personaId);
-        const prompt = (await listPromptTemplates()).find((item) => item.id === data.run.promptTemplateId);
-        return NextResponse.json(prompt ? { ...data, run: { ...data.run, promptName: prompt.name, userPrompt: prompt.userPrompt, agentPrompt: prompt.agentPrompt, guardianSpec: prompt.guardianSpec } } : data);
+        return NextResponse.json(buildGuardianOptimizedRun(personaId));
       }
       if (runId === BUILTIN_RUN_ID) {
-        const data = buildBuiltinRun(personaId);
-        const prompt = (await listPromptTemplates()).find((item) => item.id === data.run.promptTemplateId);
-        return NextResponse.json(prompt ? { ...data, run: { ...data.run, promptName: prompt.name, userPrompt: prompt.userPrompt, agentPrompt: prompt.agentPrompt } } : data);
+        return NextResponse.json(buildBuiltinRun(personaId));
       }
       const data = await getRunData(runId, personaId);
       if (!data) return NextResponse.json({ error: '实验不存在' }, { status: 404 });
@@ -131,12 +127,8 @@ export async function GET(request: NextRequest) {
     }
     if (personaId) return NextResponse.json({ personaSource: getPersonaSource(personaId), profile: getPersonaSummaries().find((item) => item.id === personaId) });
     const [storedRuns, promptTemplates] = await Promise.all([listRuns(), listPromptTemplates()]);
-    const builtin = buildBuiltinRun().run;
-    const builtinPrompt = promptTemplates.find((item) => item.id === builtin.promptTemplateId);
-    const builtinRun = builtinPrompt ? { ...builtin, promptName: builtinPrompt.name, userPrompt: builtinPrompt.userPrompt, agentPrompt: builtinPrompt.agentPrompt, guardianSpec: builtinPrompt.guardianSpec } : builtin;
-    const guardian = buildGuardianOptimizedRun().run;
-    const guardianPrompt = promptTemplates.find((item) => item.id === guardian.promptTemplateId);
-    const guardianRun = guardianPrompt ? { ...guardian, promptName: guardianPrompt.name, userPrompt: guardianPrompt.userPrompt, agentPrompt: guardianPrompt.agentPrompt, guardianSpec: guardianPrompt.guardianSpec } : guardian;
+    const builtinRun = buildBuiltinRun().run;
+    const guardianRun = buildGuardianOptimizedRun().run;
     return NextResponse.json({ personas: getPersonaSummaries(), promptTemplates, runs: [guardianRun, builtinRun, ...storedRuns.filter((run) => run.id !== BUILTIN_RUN_ID && run.id !== GUARDIAN_RUN_ID)] });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : '读取失败' }, { status: 500 });
