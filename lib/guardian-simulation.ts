@@ -1,6 +1,7 @@
 import { GUARDIAN_AGENT_PROMPT, GUARDIAN_MVP_SPEC, GUARDIAN_PROMPT_TEMPLATE, GUARDIAN_USER_PROMPT } from './prompts';
 import { getPersonaSummaries, getPersonaSource } from './personas';
-import { everydayMoments, guardianScenes } from './guardian-scenes';
+import { guardianScenes } from './guardian-scenes';
+import { buildMemoryLinkedDialogue, collectDialogueAnchors, futureMemory } from './memory-dialogue-engine';
 import type { ChatMessage, MemoryFragment, Phase, RunRecord } from './types';
 
 export const GUARDIAN_RUN_ID = 'guardian-human-v1';
@@ -31,25 +32,6 @@ function frameworkFor(domain: string) {
   return `01_Self_Memory.${domain}`;
 }
 
-function tuneMomentLine(line: string, archetype: string, key: string) {
-  const variant = hash(key) % 4;
-  if (archetype === '稳燃共振型' && variant === 0 && !/[？?]$/.test(line) && !/[哈啊]/.test(line)) return `${line.replace(/[。！!]$/, '')}哈哈`;
-  if (archetype === '柔锋型') return line.replace(/^很好，/, '').replace(/。$/, '');
-  if (archetype === '定流型' && variant === 1) return line.replace(/^那/, '嗯，那');
-  if (archetype === '同行生长型' && variant === 2 && /先/.test(line)) return line.replace('先', '那就先');
-  return line;
-}
-
-function tuneUserLine(line: string, personaId: string, messageIndex: number, key: string) {
-  const variant = hash(`${personaId}-${key}`) % 6;
-  if (variant === 0) return line.replace('我刚', '我刚刚').replace('今天', '今天居然');
-  if (variant === 1) return line.replace('宿舍', '寝室').replace('食堂', '二食堂').replace('图书馆', '图书馆二楼');
-  if (variant === 2) return line.replace('结果', '然后').replace('现在我', '我现在').replace('特别', '巨');
-  if (variant === 3 && messageIndex === 0) return `救命，${line}`;
-  if (variant === 4) return line.replace('老师', '任课老师').replace('刚才', '刚刚').replace('有点', '有一点');
-  return line.replace(/[。！!]$/, '');
-}
-
 export function buildGuardianOptimizedRun(personaFilter?: string) {
   const profiles = getPersonaSummaries();
   const selectedIds = profiles.map((profile) => profile.id);
@@ -61,6 +43,8 @@ export function buildGuardianOptimizedRun(personaFilter?: string) {
     if (personaFilter && profile.id !== personaFilter) continue;
     const curated = guardianScenes[profile.id];
     if (!curated) continue;
+    const source = getPersonaSource(profile.id) || {};
+    const anchors = collectDialogueAnchors(source, profile);
     const idNumber = Number(profile.id.slice(1));
     for (const phase of ['historical', 'future'] as Phase[]) {
       const scene = curated[phase];
@@ -71,28 +55,51 @@ export function buildGuardianOptimizedRun(personaFilter?: string) {
       scene.messages.forEach(([speaker, content], index) => {
         const id = `gh2-${profile.id}-${phase[0]}-primary-${index + 1}`;
         primaryIds.push(id);
-        const voiced = speaker === 'agent' ? tuneMomentLine(content, profile.agent.archetype || '', id) : content;
-        messages.push({ id, runId: GUARDIAN_RUN_ID, personaId: profile.id, phase, sessionId: `${profile.id}-${phase}-primary-v2`, timestamp: new Date(primaryBase + index * 85_000).toISOString(), speaker, content: voiced, sequence: sequence++ });
+        messages.push({ id, runId: GUARDIAN_RUN_ID, personaId: profile.id, phase, sessionId: `${profile.id}-${phase}-primary-v3`, timestamp: new Date(primaryBase + index * 85_000).toISOString(), speaker, content, sequence: sequence++ });
       });
       scene.memories.forEach((memory, index) => memories.push({ id: `gh2-${profile.id}-${phase[0]}-memory-${index + 1}`, runId: GUARDIAN_RUN_ID, personaId: profile.id, dayKey: primaryDay, phase, domain: memory.domain, kind: memory.kind ?? 'fact', content: memory.content, confidence: memory.kind === 'observed' || memory.kind === 'current_state' ? .76 : .93, evidenceType: memory.kind === 'observed' || memory.kind === 'stable_trait' || memory.kind === 'current_state' ? 'observed' : 'explicit', privacy: memory.privacy ?? 'normal', socialIntent: Boolean(memory.socialIntent), sourceMessageIds: [primaryIds[memory.source]].filter(Boolean), status: 'active', frameworkPath: frameworkFor(memory.domain), dailySummary: memory.content }));
       momentOffsets(profile.activityClass, phase).forEach((offset, momentIndex) => {
         if (offset === primaryOffset) return;
         const day = dateAt(offset);
-        const poolIndex = (idNumber * 7 + momentIndex + (phase === 'future' ? 28 : 0)) % everydayMoments.length;
-        const moment = everydayMoments[poolIndex];
+        const anchorIndex = (momentIndex * 3 + idNumber + (phase === 'future' ? 5 : 0)) % anchors.length;
+        const anchorItem = anchors[anchorIndex];
+        const moment = buildMemoryLinkedDialogue(profile, anchorItem, phase, momentIndex + idNumber);
         const baseHour = 11 + hash(`${profile.id}-${day}`) % 11;
         const baseMinute = hash(`${day}-${profile.id}-guardian`) % 47;
         const base = new Date(`${day}T${String(baseHour).padStart(2, '0')}:${String(baseMinute).padStart(2, '0')}:00+08:00`).getTime();
+        const sourceIds: string[] = [];
         moment.forEach(([speaker, rawContent], index) => {
           const id = `gh2-${profile.id}-${phase[0]}-moment-${momentIndex + 1}-${index + 1}`;
-          const content = speaker === 'agent' ? tuneMomentLine(rawContent, profile.agent.archetype || '', id) : tuneUserLine(rawContent, profile.id, index, id);
-          messages.push({ id, runId: GUARDIAN_RUN_ID, personaId: profile.id, phase, sessionId: `${profile.id}-${phase}-moment-${momentIndex + 1}`, timestamp: new Date(base + index * 70_000).toISOString(), speaker, content, sequence: sequence++ });
+          if (speaker === 'user') sourceIds.push(id);
+          messages.push({ id, runId: GUARDIAN_RUN_ID, personaId: profile.id, phase, sessionId: `${profile.id}-${phase}-memory-${momentIndex + 1}`, timestamp: new Date(base + index * 70_000).toISOString(), speaker, content: rawContent, sequence: sequence++ });
         });
+        const shouldExtract = phase === 'future' || momentIndex % Math.max(1, Math.ceil(anchors.length / 4)) === 0;
+        if (shouldExtract && sourceIds[0]) {
+          const content = phase === 'future' ? futureMemory(anchorItem, momentIndex + idNumber) : anchorItem.memory;
+          memories.push({
+            id: `gh3-${profile.id}-${phase[0]}-linked-memory-${momentIndex + 1}`,
+            runId: GUARDIAN_RUN_ID,
+            personaId: profile.id,
+            dayKey: day,
+            phase,
+            domain: anchorItem.domain,
+            kind: anchorItem.kind,
+            content,
+            confidence: anchorItem.kind === 'current_state' ? .78 : phase === 'future' ? .84 : .92,
+            evidenceType: anchorItem.kind === 'current_state' ? 'observed' : 'explicit',
+            privacy: anchorItem.privacy,
+            socialIntent: anchorItem.domain === 'social_intent',
+            sourceMessageIds: [sourceIds[0]],
+            status: 'active',
+            frameworkPath: frameworkFor(anchorItem.domain),
+            dailySummary: `${anchorItem.topic}：${phase === 'future' ? '出现新的对话证据' : '由当天对话还原到原始 Memory'}。`,
+          });
+        }
       });
     }
   }
   messages.sort((a, b) => a.timestamp.localeCompare(b.timestamp) || a.sequence - b.sequence);
   messages.forEach((message, index) => { message.sequence = index; });
-  const run: RunRecord = { id: GUARDIAN_RUN_ID, name: '伴生精灵人感优化v1', status: 'completed', createdAt: `${anchor}T04:00:00.000Z`, completedAt: `${anchor}T04:40:00.000Z`, provider: 'Codex 独立重新生成', model: 'BaZi Guardian Match MVP v1.1', historicalDays: 28, futureDays: 14, densityScale: 50, selectedCount: personaFilter ? 1 : 32, completedCount: personaFilter ? 1 : 32, failedCount: 0, errorSummary: null, promptTemplateId: GUARDIAN_PROMPT_TEMPLATE.id, promptName: GUARDIAN_PROMPT_TEMPLATE.name, userPrompt: GUARDIAN_USER_PROMPT, agentPrompt: GUARDIAN_AGENT_PROMPT, guardianSpec: GUARDIAN_MVP_SPEC, notes: '独立重新生成：不继承旧基线对话；短回复、语用理解、跨日连续性与具体 hook。' };
+  const run: RunRecord = { id: GUARDIAN_RUN_ID, name: '伴生精灵人感优化v1', status: 'completed', createdAt: `${anchor}T04:00:00.000Z`, completedAt: `${anchor}T04:40:00.000Z`, provider: 'Codex 独立重新生成', model: 'Memory-grounded Guardian v1.2', historicalDays: 28, futureDays: 14, densityScale: 50, selectedCount: personaFilter ? 1 : 32, completedCount: personaFilter ? 1 : 32, failedCount: 0, errorSummary: null, promptTemplateId: GUARDIAN_PROMPT_TEMPLATE.id, promptName: GUARDIAN_PROMPT_TEMPLATE.name, userPrompt: GUARDIAN_USER_PROMPT, agentPrompt: GUARDIAN_AGENT_PROMPT, guardianSpec: GUARDIAN_MVP_SPEC, notes: '每个聊天时段均由该用户原始 Memory 推演；取消跨用户公共场景池，并按 Guardian 原型区分表达。' };
   return { run, selectedIds: personaFilter ? [personaFilter] : selectedIds, messages, memories, failures: [], personaSource: personaFilter ? getPersonaSource(personaFilter) : undefined };
 }
