@@ -35,6 +35,7 @@ export async function ensureSchema() {
   if (!runColumnNames.has('user_prompt')) await db().prepare(`ALTER TABLE simulation_runs ADD COLUMN user_prompt TEXT`).run();
   if (!runColumnNames.has('agent_prompt')) await db().prepare(`ALTER TABLE simulation_runs ADD COLUMN agent_prompt TEXT`).run();
   if (!runColumnNames.has('guardian_spec')) await db().prepare(`ALTER TABLE simulation_runs ADD COLUMN guardian_spec TEXT`).run();
+  if (!runColumnNames.has('notes')) await db().prepare(`ALTER TABLE simulation_runs ADD COLUMN notes TEXT`).run();
   const promptColumns = await db().prepare(`PRAGMA table_info(prompt_templates)`).all();
   const promptColumnNames = new Set((promptColumns.results as Array<{ name: string }>).map((column) => column.name));
   if (!promptColumnNames.has('guardian_spec')) await db().prepare(`ALTER TABLE prompt_templates ADD COLUMN guardian_spec TEXT NOT NULL DEFAULT ''`).run();
@@ -43,7 +44,7 @@ export async function ensureSchema() {
 
 function mapRun(row: Record<string, unknown>): RunRecord {
   return {
-    id: String(row.id), name: String(row.name), status: String(row.status), createdAt: String(row.created_at), completedAt: row.completed_at ? String(row.completed_at) : null, provider: String(row.provider), model: String(row.model), historicalDays: Number(row.historical_days), futureDays: Number(row.future_days), densityScale: Number(row.density_scale), selectedCount: Number(row.selected_count), completedCount: Number(row.completed_count), failedCount: Number(row.failed_count), errorSummary: row.error_summary ? String(row.error_summary) : null, promptTemplateId: row.prompt_template_id ? String(row.prompt_template_id) : undefined, promptName: row.prompt_name ? String(row.prompt_name) : undefined, userPrompt: row.user_prompt ? String(row.user_prompt) : undefined, agentPrompt: row.agent_prompt ? String(row.agent_prompt) : undefined, guardianSpec: row.guardian_spec ? String(row.guardian_spec) : undefined,
+    id: String(row.id), name: String(row.name), status: String(row.status), createdAt: String(row.created_at), completedAt: row.completed_at ? String(row.completed_at) : null, provider: String(row.provider), model: String(row.model), historicalDays: Number(row.historical_days), futureDays: Number(row.future_days), densityScale: Number(row.density_scale), selectedCount: Number(row.selected_count), completedCount: Number(row.completed_count), failedCount: Number(row.failed_count), errorSummary: row.error_summary ? String(row.error_summary) : null, promptTemplateId: row.prompt_template_id ? String(row.prompt_template_id) : undefined, promptName: row.prompt_name ? String(row.prompt_name) : undefined, userPrompt: row.user_prompt ? String(row.user_prompt) : undefined, agentPrompt: row.agent_prompt ? String(row.agent_prompt) : undefined, guardianSpec: row.guardian_spec ? String(row.guardian_spec) : undefined, notes: row.notes ? String(row.notes) : undefined,
   };
 }
 
@@ -87,9 +88,21 @@ export async function savePromptTemplate(input: { id?: string; name: string; use
   return { id, name: input.name.slice(0, 80), userPrompt: input.userPrompt.slice(0, 24000), agentPrompt: input.agentPrompt.slice(0, 24000), guardianSpec: (input.guardianSpec || '').slice(0, 60000), createdAt: existing?.created_at ? String(existing.created_at) : now, updatedAt: now, builtin: id === DEFAULT_PROMPT_TEMPLATE.id || id === GUARDIAN_PROMPT_TEMPLATE.id } satisfies PromptTemplate;
 }
 
-export async function renameRun(runId: string, name: string) {
+export async function updateRunMetadata(runId: string, name: string, notes: string) {
   await ensureSchema();
-  await db().prepare(`UPDATE simulation_runs SET name=? WHERE id=?`).bind(name.slice(0, 80), runId).run();
+  await db().prepare(`UPDATE simulation_runs SET name=?,notes=? WHERE id=?`).bind(name.slice(0, 80), notes.slice(0, 1000), runId).run();
+}
+
+export async function deleteRun(runId: string) {
+  await ensureSchema();
+  const existing = await db().prepare(`SELECT id FROM simulation_runs WHERE id=?`).bind(runId).first();
+  if (!existing) throw new Error('实验不存在或已删除');
+  await db().batch([
+    db().prepare(`DELETE FROM chat_messages WHERE run_id=?`).bind(runId),
+    db().prepare(`DELETE FROM memory_fragments WHERE run_id=?`).bind(runId),
+    db().prepare(`DELETE FROM simulation_failures WHERE run_id=?`).bind(runId),
+    db().prepare(`DELETE FROM simulation_runs WHERE id=?`).bind(runId),
+  ]);
 }
 
 export async function updateRunPrompt(runId: string, prompt: { id: string; name: string; userPrompt: string; agentPrompt: string; guardianSpec?: string }) {

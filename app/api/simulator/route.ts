@@ -2,7 +2,7 @@ import { env } from 'cloudflare:workers';
 import { NextRequest, NextResponse } from 'next/server';
 import { activityPlan, buildProfileForPrompt, getPersonaSource, getPersonaSummaries } from '@/lib/personas';
 import { buildConversationPrompt } from '@/lib/prompts';
-import { createRun, getRunData, listPromptTemplates, listRuns, renameRun, saveFailure, savePersonaResult, savePromptTemplate, updateRunPrompt } from '@/lib/store';
+import { createRun, deleteRun, getRunData, listPromptTemplates, listRuns, saveFailure, savePersonaResult, savePromptTemplate, updateRunMetadata, updateRunPrompt } from '@/lib/store';
 import type { ChatMessage, MemoryFragment, Phase } from '@/lib/types';
 import { BUILTIN_RUN_ID, buildBuiltinRun } from '@/lib/builtin-simulation';
 import { GUARDIAN_RUN_ID, buildGuardianOptimizedRun } from '@/lib/guardian-simulation';
@@ -16,6 +16,15 @@ const providerDefaults: Record<string, { baseUrl: string; model: string; envKey:
   moonshot: { baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-32k', envKey: 'MOONSHOT_API_KEY' },
   siliconflow: { baseUrl: 'https://api.siliconflow.cn/v1', model: 'deepseek-ai/DeepSeek-V3', envKey: 'SILICONFLOW_API_KEY' },
 };
+
+function customProviderBaseUrl(raw: string) {
+  let parsed: URL;
+  try { parsed = new URL(raw); } catch { throw new Error('自定义厂商的 Base URL 无效'); }
+  if (parsed.protocol !== 'https:') throw new Error('自定义厂商的 Base URL 必须使用 HTTPS');
+  const host = parsed.hostname.toLowerCase();
+  if (host === 'localhost' || host === '0.0.0.0' || host === '::1' || host.endsWith('.local') || /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^169\.254\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host)) throw new Error('自定义厂商的 Base URL 不能指向本地或内网地址');
+  return parsed.toString().replace(/\/$/, '');
+}
 
 function dateKey(offsetDays: number) {
   const date = new Date();
@@ -140,7 +149,15 @@ export async function POST(request: NextRequest) {
     if (input.action === 'create_run') {
       const selectedIds = Array.isArray(input.selectedIds) ? input.selectedIds.filter((id: unknown) => /^U\d{2}$/.test(String(id))) : [];
       if (!selectedIds.length) throw new Error('请至少选择 1 个用户');
-      const run = await createRun({ name: String(input.name || `Memory 实验 ${new Date().toLocaleDateString('zh-CN')}`), provider: String(input.provider || 'deepseek'), model: String(input.model || 'deepseek-chat'), historicalDays: Math.max(7, Math.min(90, Number(input.historicalDays) || 28)), futureDays: 14, densityScale: Math.max(10, Math.min(100, Number(input.densityScale) || 30)), selectedIds, promptTemplateId: String(input.promptTemplateId || ''), promptName: String(input.promptName || ''), userPrompt: String(input.userPrompt || ''), agentPrompt: String(input.agentPrompt || ''), guardianSpec: String(input.guardianSpec || '') });
+      const provider = String(input.provider || 'deepseek');
+      const customProviderName = String(input.customProviderName || '').trim();
+      if (provider === 'custom') {
+        if (!customProviderName) throw new Error('请填写自定义 API 厂商名称');
+        customProviderBaseUrl(String(input.baseUrl || ''));
+      }
+      const model = String(input.model || providerDefaults[provider]?.model || '').trim();
+      if (!model) throw new Error('请填写模型名称');
+      const run = await createRun({ name: String(input.name || `Memory 实验 ${new Date().toLocaleDateString('zh-CN')}`), provider: provider === 'custom' ? customProviderName.slice(0, 60) : provider, model, historicalDays: Math.max(7, Math.min(90, Number(input.historicalDays) || 28)), futureDays: 14, densityScale: Math.max(10, Math.min(100, Number(input.densityScale) || 30)), selectedIds, promptTemplateId: String(input.promptTemplateId || ''), promptName: String(input.promptName || ''), userPrompt: String(input.userPrompt || ''), agentPrompt: String(input.agentPrompt || ''), guardianSpec: String(input.guardianSpec || '') });
       return NextResponse.json({ run });
     }
     if (input.action === 'save_prompt') {
@@ -158,12 +175,19 @@ export async function POST(request: NextRequest) {
       await updateRunPrompt(runId, { id: String(input.promptTemplateId || ''), name: String(input.promptName || ''), userPrompt: String(input.userPrompt || ''), agentPrompt: String(input.agentPrompt || ''), guardianSpec: String(input.guardianSpec || '') });
       return NextResponse.json({ ok: true });
     }
-    if (input.action === 'rename_run') {
+    if (input.action === 'update_run') {
       const runId = String(input.runId || '');
       const name = String(input.name || '').trim();
-      if (!runId || !name || runId === BUILTIN_RUN_ID || runId === GUARDIAN_RUN_ID) throw new Error('该版本不能重命名');
-      await renameRun(runId, name);
-      return NextResponse.json({ ok: true, name });
+      const notes = String(input.notes || '').trim();
+      if (!runId || !name || runId === BUILTIN_RUN_ID || runId === GUARDIAN_RUN_ID) throw new Error('内置基线不能修改');
+      await updateRunMetadata(runId, name, notes);
+      return NextResponse.json({ ok: true, name, notes });
+    }
+    if (input.action === 'delete_run') {
+      const runId = String(input.runId || '');
+      if (!runId || runId === BUILTIN_RUN_ID || runId === GUARDIAN_RUN_ID) throw new Error('内置基线不能删除');
+      await deleteRun(runId);
+      return NextResponse.json({ ok: true });
     }
     if (input.action === 'simulate_persona') {
       const runId = String(input.runId || '');
@@ -172,12 +196,16 @@ export async function POST(request: NextRequest) {
       if (!runId || !foundProfile) throw new Error('实验或用户参数无效');
       const profile = foundProfile;
       const provider = String(input.provider || 'deepseek');
-      const defaults = providerDefaults[provider] ?? providerDefaults.deepseek;
+      const isCustomProvider = provider === 'custom';
+      const defaults = providerDefaults[provider] ?? { baseUrl: '', model: '', envKey: 'LLM_API_KEY' };
       const model = String(input.model || defaults.model);
+      if (!model.trim()) throw new Error('请填写模型名称');
       const envVars = env as unknown as Record<string, string | undefined>;
       const apiKey = request.headers.get('x-llm-api-key') || envVars[defaults.envKey] || envVars.LLM_API_KEY || '';
       if (!apiKey) throw new Error(`未检测到 API Key。可临时输入，或配置 ${defaults.envKey} / LLM_API_KEY 环境变量。`);
-      const baseUrl = String(input.baseUrl || envVars[`${provider.toUpperCase()}_BASE_URL`] || envVars.LLM_BASE_URL || defaults.baseUrl);
+      const rawBaseUrl = String(input.baseUrl || envVars[`${provider.toUpperCase()}_BASE_URL`] || envVars.LLM_BASE_URL || defaults.baseUrl);
+      if (isCustomProvider && !rawBaseUrl) throw new Error('未知厂商需要填写 OpenAI-compatible Base URL');
+      const baseUrl = isCustomProvider ? customProviderBaseUrl(rawBaseUrl) : rawBaseUrl;
       const historicalDays = Math.max(7, Math.min(90, Number(input.historicalDays) || 28));
       const futureDays = 14;
       const scale = Math.max(10, Math.min(100, Number(input.densityScale) || 30));

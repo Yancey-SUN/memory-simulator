@@ -89,6 +89,7 @@ export type RunRecord = {
   userPrompt?: string;
   agentPrompt?: string;
   guardianSpec?: string;
+  notes?: string;
 };
 
 export type PromptTemplate = {
